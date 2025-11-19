@@ -1,0 +1,90 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Tenant Administration{% endblock %}
+
+{% block branding %}
+<h1 id="site-name">
+    <a href="{% url 'admin:index' %}">Compliance Platform</a>
+</h1>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="module" style="margin-bottom: 20px;">
+        <h2>Tenant Administration</h2>
+        <p>Select a tenant to access their isolated compliance admin panel.</p>
+    </div>
+
+    <div class="module">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background: #417690; color: white;">
+                    <th style="padding: 10px; text-align: left;">Company</th>
+                    <th style="padding: 10px; text-align: left;">Tenant Slug</th>
+                    <th style="padding: 10px; text-align: left;">Subscription</th>
+                    <th style="padding: 10px; text-align: left;">Status</th>
+                    <th style="padding: 10px; text-align: center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tenant in tenants %}
+                <tr style="border-bottom: 1px solid #ddd;">
+                    <td style="padding: 10px;">
+                        <strong>{{ tenant.company_name }}</strong><br>
+                        <small style="color: #666;">{{ tenant.company_email }}</small>
+                    </td>
+                    <td style="padding: 10px;">
+                        <code>{{ tenant.tenant_slug }}</code>
+                    </td>
+                    <td style="padding: 10px;">
+                        {{ tenant.subscription_plan.name }}
+                    </td>
+                    <td style="padding: 10px;">
+                        {% if tenant.subscription_status == 'ACTIVE' %}
+                        <span style="background: #10B981; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px;">ACTIVE</span>
+                        {% elif tenant.subscription_status == 'TRIAL' %}
+                        <span style="background: #F59E0B; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px;">TRIAL</span>
+                        {% else %}
+                        <span style="background: #6B7280; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px;">{{ tenant.subscription_status }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding: 10px; text-align: center;">
+                        <a href="/admin/tenant/{{ tenant.tenant_slug }}/admin/" 
+                           style="background: #417690; color: white; padding: 6px 12px; border-radius: 4px; text-decoration: none; display: inline-block;">
+                            Open Admin Panel →
+                        </a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5" style="padding: 20px; text-align: center; color: #666;">
+                        No tenants available.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if is_paginated %}
+    <div class="pagination" style="margin-top: 20px;">
+        <span class="step-links">
+            {% if page_obj.has_previous %}
+                <a href="?page=1">&laquo; first</a>
+                <a href="?page={{ page_obj.previous_page_number }}">previous</a>
+            {% endif %}
+
+            <span class="current">
+                Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+            </span>
+
+            {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}">next</a>
+                <a href="?page={{ page_obj.paginator.num_pages }}">last &raquo;</a>
+            {% endif %}
+        </span>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
