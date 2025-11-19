@@ -188,7 +188,6 @@ class TenantMiddleware(MiddlewareMixin):
             
             tenant_info = {
                 'status': tenant.subscription_status,
-                'isolation_mode': tenant.isolation_mode,
                 'schema_name': tenant.schema_name,
                 'database_name': tenant.database_name,
                 'company_name': tenant.company_name
@@ -202,7 +201,7 @@ class TenantMiddleware(MiddlewareMixin):
             }, status=404)
         
         # Check if tenant is active
-        if tenant_info.get('status') not in ['ACTIVE', 'TRIAL']:
+        if tenant_info.get('status') not in ['ACTIVE', 'PENDING_PAYMENT']:
             logger.warning(f"Tenant not active: {tenant_slug} - Status: {tenant_info.get('status')}")
             return JsonResponse({
                 'error': 'Tenant not available',

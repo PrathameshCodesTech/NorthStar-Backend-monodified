@@ -24,7 +24,7 @@ _thread_locals = threading.local()
 
 def get_current_tenant():
     """Get current tenant from context (async-safe)"""
-    # Try ContextVar first (async-safe)
+    # Try ContextVar first (async-safe)s
     tenant = _tenant_context.get(None)
     if tenant:
         return tenant

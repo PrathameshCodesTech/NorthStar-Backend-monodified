@@ -1113,3 +1113,409 @@ This is a **production-grade multi-tenant SaaS platform** with:
 **Documentation Version**: 1.0.0  
 **Last Updated**: November 2024  
 **Maintained By**: Your Development Team
+
+
+INPUT:
+{
+  "tenant_slug": "acmecorp",
+  "company_name": "AcmeCorp Inc",
+  "company_email": "admin@acmecorp.com",
+  "subscription_plan_code": "PROFESSIONAL"
+}
+
+WHAT HAPPENS:
+1. ✅ Creates record in tenant_database_info table (public schema)
+2. ✅ Creates PostgreSQL schema: acmecorp_schema
+3. ✅ Runs migrations → Creates 12 empty tables in acmecorp_schema:
+   - company_frameworks
+   - company_domains
+   - company_categories
+   - company_subcategories
+   - company_controls
+   - company_assessment_questions
+   - company_evidence_requirements
+   - control_assignments
+   - assessment_campaigns
+   - assessment_responses
+   - evidence_documents
+   - compliance_reports
+4. ✅ Sets subscription_status = 'TRIAL' ← YOU WANT TO CHANGE THIS
+5. ✅ Sets trial_end_date = today + 30 days ← YOU WANT TO REMOVE THIS
+
+RESULT:
+- Company entry created ✅
+- Empty schema with tables ✅
+- NO frameworks yet ❌
+- NO users created ❌ (users are separate)
+- subscription_status = 'TRIAL' ← Problem!
+
+
+
+
+def provision_tenant(tenant_slug, company_name, subscription_plan_code='BASIC'):
+    """
+    Complete tenant provisioning - MONOLITH VERSION
+    Creates database/schema, runs migrations, ready for frameworks
+    """
+    logger.info(f"\n[PROVISIONING] Provisioning tenant: {company_name} ({tenant_slug})")
+    
+    steps = {
+        'credentials': None,
+        'tenant_record': None,
+        'isolation_decision': None,
+        'postgres_provision': None,
+        'django_connection': None,
+        'migrations': None,
+        'final_status': None,
+    }
+    
+    try:
+        # 1) Get subscription plan
+        from .models import SubscriptionPlan
+        subscription_plan = SubscriptionPlan.objects.get(code=subscription_plan_code)
+        
+        # 2) SCHEMA mode (always)
+        isolation_mode = 'SCHEMA'
+        steps['isolation_decision'] = {'mode': isolation_mode, 'plan': subscription_plan_code}
+        logger.info(f"[INFO] Using SCHEMA isolation mode")
+        
+        # 3) Set schema credentials (uses main database)
+        db_name = 'main_compliance_system_db'
+        db_user = settings.DATABASES['default']['USER']
+        db_password = settings.DATABASES['default']['PASSWORD']
+        schema_name = f"{tenant_slug}_schema"
+
+        
+        steps['credentials'] = {
+            'db_name': db_name,
+            'schema_name': schema_name,
+            'mode': isolation_mode
+        }
+        
+        # 4) Create tenant record
+        tenant_info = TenantDatabaseInfo.objects.create(
+            tenant_slug=tenant_slug,
+            company_name=company_name,
+            database_name=db_name,
+            database_user=db_user,
+            database_host=settings.DATABASES['default']['HOST'],
+            database_port=settings.DATABASES['default']['PORT'],
+            subscription_plan=subscription_plan,
+            provisioning_status='PROVISIONING',
+            schema_name=schema_name,
+            is_active=True,\
+            subscription_start_date=timezone.now().date(),  # ✅ ADD THIS
+            trial_end_date=timezone.now().date() + timedelta(days=30),  # ✅ ADD THIS (30-day trial)
+        )
+        tenant_info.encrypt_password(db_password)
+        tenant_info.save()
+        steps['tenant_record'] = {'id': str(tenant_info.id)}
+        logger.info(f"[SUCCESS] Created tenant record: {tenant_info.id}")
+        
+        
+        create_postgresql_schema(schema_name)
+        steps['postgres_provision'] = {'type': 'schema', 'name': schema_name}
+
+
+        # 6) Register Django connection
+        connection_name = add_tenant_database_to_django(tenant_info)
+        steps['django_connection'] = {'connection_name': connection_name}
+        
+        # 7) Run migrations
+        migration_result = run_tenant_migrations(tenant_slug, connection_name)
+        steps['migrations'] = migration_result
+        
+        # 7b) If migrations failed, force create tables
+        if not migration_result['success']:
+            logger.warning(f"[WARN] Migrations failed, forcing table creation...")
+            force_result = force_create_company_tables(
+                connection_name=connection_name,
+                schema_name=tenant_info.schema_name
+            )
+            steps['force_tables'] = force_result
+            
+            # Update migration result if force creation succeeded
+            if force_result['success']:
+                migration_result = force_result
+                logger.info(f"[SUCCESS] Tables created via force method")
+
+        # 8) Update status
+        if migration_result['success']:
+            tenant_info.provisioning_status = 'ACTIVE'
+            tenant_info.subscription_status = 'TRIAL'  # Start with trial
+            logger.info(f"[SUCCESS] Tenant {tenant_slug} provisioned successfully!")
+        else:
+            tenant_info.provisioning_status = 'FAILED'
+            logger.error(f"[ERROR] Tenant {tenant_slug} provisioning failed")
+        
+        tenant_info.save()
+        steps['final_status'] = tenant_info.provisioning_status
+        
+        return {
+            'success': migration_result['success'],
+            'tenant_info': tenant_info,
+            'connection_name': connection_name,
+            'steps': steps
+        }
+        
+    except Exception as e:
+        logger.error(f"[ERROR] Provisioning error: {e}")
+        if 'tenant_info' in locals():
+            tenant_info.provisioning_status = 'FAILED'
+            tenant_info.save()
+        raise
+
+
+# 🎉 **Success! Here are ALL Tenant Management Endpoints**
+
+---
+
+## 📋 **TENANT MANAGEMENT API ENDPOINTS**
+
+### **Base URL:** `/api/v2/admin/`
+
+---
+
+## 1️⃣ **SUBSCRIPTION PLANS** (Read-Only for Most Users)
+
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| GET | `/plans/` | List all subscription plans | All SuperAdmins |
+| GET | `/plans/{id}/` | Get plan details | All SuperAdmins |
+| POST | `/plans/` | Create new plan | SuperAdmin Only |
+| PUT/PATCH | `/plans/{id}/` | Update plan | SuperAdmin Only |
+
+---
+
+## 2️⃣ **TENANT CRUD OPERATIONS**
+
+| Method | Endpoint | Description | Response |
+|--------|----------|-------------|----------|
+| **GET** | `/tenants/` | List all tenants | Tenant list with filters |
+| **GET** | `/tenants/{slug}/` | Get tenant details | Full tenant info |
+| **POST** | `/tenants/` | Create new tenant | PENDING_PAYMENT status |
+| **PATCH** | `/tenants/{slug}/` | Update tenant info | Updated tenant |
+| **DELETE** | `/tenants/{slug}/` | Soft delete tenant | Marks as inactive |
+
+---
+
+## 3️⃣ **TENANT ACTIVATION & PAYMENT FLOW** ⭐
+
+| Method | Endpoint | Description | When to Use |
+|--------|----------|-------------|-------------|
+| **POST** | `/tenants/{slug}/activate/` | Activate tenant after payment | After payment confirmed |
+| **DELETE** | `/tenants/{slug}/delete_pending/` | Delete pending tenant | If payment fails |
+
+**Activate Request Body:**
+```json
+{
+  "framework_id": "uuid-of-framework",
+  "customization_level": "CONTROL_LEVEL",  // Optional
+  "payment_id": "pay_xxxxx"  // Optional reference
+}
+```
+
+---
+
+## 4️⃣ **TENANT FRAMEWORK MANAGEMENT**
+
+| Method | Endpoint | Description | When to Use |
+|--------|----------|-------------|-------------|
+| **POST** | `/tenants/{slug}/subscribe/` | Subscribe to additional framework | After tenant is ACTIVE |
+| **GET** | `/tenants/{slug}/frameworks/` | List tenant's frameworks | Anytime |
+
+**Subscribe Request Body:**
+```json
+{
+  "framework_id": "uuid-of-framework",
+  "customization_level": "CONTROL_LEVEL"  // Optional
+}
+```
+
+---
+
+## 5️⃣ **TENANT STATUS MANAGEMENT**
+
+| Method | Endpoint | Description | Effect |
+|--------|----------|-------------|--------|
+| **POST** | `/tenants/{slug}/suspend/` | Suspend tenant | Status → SUSPENDED |
+| **POST** | `/tenants/{slug}/activate/` | Reactivate suspended tenant | Status → ACTIVE |
+
+---
+
+## 6️⃣ **TENANT USAGE & MONITORING**
+
+| Method | Endpoint | Description | Returns |
+|--------|----------|-------------|---------|
+| **GET** | `/tenants/{slug}/usage/` | Get usage statistics | Users, frameworks, storage stats |
+
+**Response:**
+```json
+{
+  "tenant_slug": "luck",
+  "current_usage": {
+    "users": 5,
+    "frameworks": 2,
+    "controls": 150,
+    "storage_gb": 2.5
+  },
+  "plan_limits": {
+    "max_users": 50,
+    "max_frameworks": 5,
+    "storage_gb": 50
+  },
+  "usage_history": [...]
+}
+```
+
+---
+
+## 7️⃣ **FRAMEWORK SUBSCRIPTIONS** (Read-Only)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/framework-subscriptions/` | List all subscriptions |
+| GET | `/framework-subscriptions/{id}/` | Get subscription details |
+
+**Filter by:** `tenant__tenant_slug`, `status`, `customization_level`
+
+---
+
+## 📊 **QUERY PARAMETERS (Filters)**
+
+### **GET /tenants/** supports:
+
+| Parameter | Example | Description |
+|-----------|---------|-------------|
+| `subscription_status` | `?subscription_status=ACTIVE` | Filter by status |
+| `provisioning_status` | `?provisioning_status=ACTIVE` | Filter by provisioning |
+| `is_active` | `?is_active=true` | Active tenants only |
+| `show_deleted` | `?show_deleted=true` | Include deleted tenants |
+| `search` | `?search=acme` | Search by slug, name, email |
+| `ordering` | `?ordering=-created_at` | Sort results |
+
+---
+
+## 🔐 **AUTHENTICATION**
+
+All endpoints require:
+```http
+Authorization: Bearer <your-superadmin-jwt-token>
+```
+
+---
+
+## 🎯 **COMPLETE TENANT LIFECYCLE**
+
+### **1. Create Tenant (PENDING_PAYMENT)**
+```bash
+POST /api/v2/admin/tenants/
+{
+  "tenant_slug": "newcorp",
+  "company_name": "New Corp",
+  "company_email": "admin@newcorp.com",
+  "subscription_plan_code": "PROFESSIONAL"
+}
+
+Response: {
+  "status": "PENDING_PAYMENT",
+  "payment_required": true,
+  "amount": 599.00
+}
+```
+
+### **2. Activate Tenant (After Payment)**
+```bash
+POST /api/v2/admin/tenants/newcorp/activate/
+{
+  "framework_id": "uuid-of-sox",
+  "payment_id": "pay_12345"
+}
+
+Response: {
+  "status": "ACTIVE",
+  "framework_subscribed": true
+}
+```
+
+### **3. Subscribe to Additional Framework**
+```bash
+POST /api/v2/admin/tenants/newcorp/subscribe/
+{
+  "framework_id": "uuid-of-iso27001"
+}
+
+Response: {
+  "success": true,
+  "message": "Subscribed to ISO 27001"
+}
+```
+
+### **4. Monitor Usage**
+```bash
+GET /api/v2/admin/tenants/newcorp/usage/
+
+Response: {
+  "current_usage": { ... },
+  "plan_limits": { ... }
+}
+```
+
+### **5. Suspend (if needed)**
+```bash
+POST /api/v2/admin/tenants/newcorp/suspend/
+
+Response: {
+  "success": true,
+  "message": "Tenant suspended"
+}
+```
+
+---
+
+## 📝 **STATUS FLOW DIAGRAM**
+
+```
+PENDING_PAYMENT (record only, no schema)
+    ↓
+    POST /activate/
+    ↓
+ACTIVE (schema created, framework copied)
+    ↓
+    ├─→ POST /subscribe/ → Add more frameworks
+    ├─→ POST /suspend/ → SUSPENDED
+    ├─→ DELETE → CANCELLED
+    └─→ GET /usage/ → Monitor usage
+```
+
+---
+
+## ✅ **QUICK REFERENCE CARD**
+
+| Task | Method | Endpoint |
+|------|--------|----------|
+| **List plans** | GET | `/plans/` |
+| **List tenants** | GET | `/tenants/` |
+| **Create tenant** | POST | `/tenants/` |
+| **Activate tenant** | POST | `/tenants/{slug}/activate/` |
+| **Delete pending** | DELETE | `/tenants/{slug}/delete_pending/` |
+| **Add framework** | POST | `/tenants/{slug}/subscribe/` |
+| **View frameworks** | GET | `/tenants/{slug}/frameworks/` |
+| **Suspend** | POST | `/tenants/{slug}/suspend/` |
+| **Check usage** | GET | `/tenants/{slug}/usage/` |
+| **Update info** | PATCH | `/tenants/{slug}/` |
+
+---
+
+## 🎉 **You Now Have:**
+
+✅ Tenant creation flow  
+✅ Payment-first activation  
+✅ Framework distribution  
+✅ Status management  
+✅ Usage monitoring  
+✅ Multi-framework support  
+
+**All working!** 🚀
+
+Need anything else?

@@ -25,7 +25,8 @@ from .serializers import (
 )
 from .permissions import IsSuperAdmin, IsSuperAdminOrReadOnly
 from .tenant_utils import (
-    provision_tenant, add_tenant_database_to_django,
+    create_tenant_record, activate_tenant_with_framework,
+    delete_pending_tenant, add_tenant_database_to_django,
     invalidate_tenant_cache
 )
 
@@ -47,7 +48,7 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     queryset = SubscriptionPlan.objects.all()
     permission_classes = [IsSuperAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['code', 'is_active', 'default_isolation_mode']
+    filterset_fields = ['code', 'is_active']
     search_fields = ['name', 'code', 'description']
     ordering_fields = ['sort_order', 'monthly_price', 'created_at']
     ordering = ['sort_order']
@@ -84,7 +85,7 @@ class TenantViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     lookup_field = 'tenant_slug'
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['subscription_status', 'provisioning_status', 'isolation_mode', 'is_active']
+    filterset_fields = ['subscription_status', 'provisioning_status', 'is_active']
     search_fields = ['tenant_slug', 'company_name', 'company_email']
     ordering_fields = ['created_at', 'company_name', 'subscription_status']
     ordering = ['-created_at']
@@ -93,11 +94,11 @@ class TenantViewSet(viewsets.ModelViewSet):
         """Filter queryset based on action"""
         queryset = super().get_queryset()
         
-        # By default, show only active tenants
+        # By default, show only active/pending tenants (hide deleted)
         if self.action == 'list':
-            show_inactive = self.request.query_params.get('show_inactive', 'false')
-            if show_inactive.lower() != 'true':
-                queryset = queryset.filter(is_active=True)
+            show_deleted = self.request.query_params.get('show_deleted', 'false')
+            if show_deleted.lower() != 'true':
+                queryset = queryset.exclude(subscription_status='DELETED')
         
         return queryset
     
@@ -112,7 +113,7 @@ class TenantViewSet(viewsets.ModelViewSet):
     
     def create(self, request, *args, **kwargs):
         """
-        Create and provision new tenant
+        Create tenant record (minimal) - awaiting payment
         
         POST /api/v2/admin/tenants/
         {
@@ -121,21 +122,47 @@ class TenantViewSet(viewsets.ModelViewSet):
             "company_email": "admin@acmecorp.com",
             "subscription_plan_code": "PROFESSIONAL"
         }
+        
+        Response:
+        {
+            "success": true,
+            "tenant_slug": "acmecorp",
+            "status": "PENDING_PAYMENT",
+            "payment_required": true,
+            "amount": 599.00,
+            "message": "Tenant record created. Please complete payment to activate.",
+            "next_step": "POST /api/v2/admin/tenants/{slug}/activate/"
+        }
         """
+        from .tenant_utils import create_tenant_record
+        
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
         try:
-            tenant = serializer.save()
+            # Create tenant record only (no schema yet)
+            result = create_tenant_record(
+                tenant_slug=serializer.validated_data['tenant_slug'],
+                company_name=serializer.validated_data['company_name'],
+                company_email=serializer.validated_data['company_email'],
+                subscription_plan_code=serializer.validated_data.get('subscription_plan_code', 'BASIC')
+            )
             
-            # Return detailed info
-            detail_serializer = TenantDetailSerializer(tenant)
+            tenant = result['tenant_info']
             
+            # Return payment info
             return Response(
                 {
                     'success': True,
-                    'message': f'Tenant "{tenant.company_name}" created successfully',
-                    'tenant': detail_serializer.data
+                    'tenant_slug': tenant.tenant_slug,
+                    'company_name': tenant.company_name,
+                    'status': tenant.subscription_status,
+                    'payment_required': result['payment_required'],
+                    'amount': float(result['amount']),
+                    'currency': 'USD',
+                    'plan': tenant.subscription_plan.name,
+                    'message': result['message'],
+                    'next_step': f'POST /api/v2/admin/tenants/{tenant.tenant_slug}/activate/'
                 },
                 status=status.HTTP_201_CREATED
             )
@@ -149,6 +176,93 @@ class TenantViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
     
+    @action(detail=True, methods=['post'])
+    def activate(self, request, tenant_slug=None):
+        """
+        Activate tenant after payment confirmation
+        Creates schema, runs migrations, subscribes to framework
+        
+        POST /api/v2/admin/tenants/{slug}/activate/
+        {
+            "framework_id": "uuid-of-framework",
+            "customization_level": "CONTROL_LEVEL",  # Optional
+            "payment_id": "pay_xxxxx"  # Optional reference
+        }
+        
+        This should be called AFTER payment is confirmed
+        """
+        tenant = self.get_object()
+        
+        # Validate tenant status
+        if tenant.subscription_status != 'PENDING_PAYMENT':
+            return Response({
+                'success': False,
+                'error': f'Tenant cannot be activated. Current status: {tenant.subscription_status}',
+                'current_status': tenant.subscription_status
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate activation data
+        from .serializers import TenantActivationSerializer
+        
+        serializer = TenantActivationSerializer(
+            data=request.data,
+            context={'tenant': tenant}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        try:
+            # Activate tenant (creates schema + subscribes to framework)
+            activated_tenant = serializer.save()
+            
+            # Return full tenant details
+            detail_serializer = TenantDetailSerializer(activated_tenant)
+            
+            return Response({
+                'success': True,
+                'message': f'Tenant "{activated_tenant.company_name}" activated successfully',
+                'tenant': detail_serializer.data,
+                'status': activated_tenant.subscription_status,
+                'framework_subscribed': True
+            }, status=status.HTTP_200_OK)
+        
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+    @action(detail=True, methods=['delete'])
+    def delete_pending(self, request, tenant_slug=None):
+        """
+        Delete pending tenant (payment failed or cancelled)
+        Only works if status is PENDING_PAYMENT
+        
+        DELETE /api/v2/admin/tenants/{slug}/delete_pending/
+        """
+        from .tenant_utils import delete_pending_tenant
+        
+        try:
+            result = delete_pending_tenant(tenant_slug)
+            
+            if result['success']:
+                return Response({
+                    'success': True,
+                    'message': result['message'],
+                    'tenant_slug': tenant_slug
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': result['message']
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
     def update(self, request, *args, **kwargs):
         """Update tenant information"""
         partial = kwargs.pop('partial', False)
@@ -193,15 +307,27 @@ class TenantViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def subscribe(self, request, tenant_slug=None):
         """
-        Subscribe tenant to framework
+        Subscribe tenant to ADDITIONAL framework
+        (For already-active tenants who want to add more frameworks)
         
         POST /api/v2/admin/tenants/{slug}/subscribe/
         {
             "framework_id": "uuid...",
-            "customization_level": "CONTROL_LEVEL"
+            "customization_level": "CONTROL_LEVEL"  # Optional - will be enforced by plan
         }
+        
+        Note: For NEW tenants, use POST /activate/ instead
         """
         tenant = self.get_object()
+        
+        # Check if tenant is already active
+        if tenant.subscription_status != 'ACTIVE':
+            return Response({
+                'success': False,
+                'error': f'Tenant must be ACTIVE to subscribe to additional frameworks. Current status: {tenant.subscription_status}',
+                'hint': 'Use POST /activate/ to activate a pending tenant'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         
         serializer = FrameworkSubscribeSerializer(
             data=request.data,
@@ -213,11 +339,49 @@ class TenantViewSet(viewsets.ModelViewSet):
             # Import here to avoid circular imports
             from templates_host.distribution_utils import copy_framework_to_tenant
             
+            # ============ ENFORCE CUSTOMIZATION LEVEL BASED ON PLAN ============
+            plan = tenant.subscription_plan
+            
+            # Determine customization level based on subscription plan
+            if plan.code == 'BASIC':
+                # BASIC: Force VIEW_ONLY (no framework copy)
+                customization_level = 'VIEW_ONLY'
+                
+            elif plan.code == 'PROFESSIONAL':
+                # PROFESSIONAL: Force CONTROL_LEVEL (can customize controls)
+                customization_level = 'CONTROL_LEVEL'
+                
+            elif plan.code == 'ENTERPRISE':
+                # ENTERPRISE: Allow user's choice OR default to FULL
+                customization_level = request.data.get('customization_level', 'FULL')
+                
+                # Validate user's choice is allowed
+                if customization_level not in ['VIEW_ONLY', 'CONTROL_LEVEL', 'FULL']:
+                    return Response({
+                        'success': False,
+                        'error': f'Invalid customization_level: {customization_level}'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # Unknown plan - use plan's default
+                customization_level = plan.default_customization_level
+            
+            # Log the enforcement
+            from django.utils import timezone
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"[PLAN ENFORCEMENT] Tenant: {tenant.tenant_slug}, "
+                f"Plan: {plan.code}, "
+                f"Requested: {request.data.get('customization_level', 'none')}, "
+                f"Enforced: {customization_level}"
+            )
+            # ====================================================================
+            
             # Distribute framework to tenant
             result = copy_framework_to_tenant(
                 tenant=tenant,
                 framework_id=str(request.data['framework_id']),
-                customization_level=request.data.get('customization_level', 'CONTROL_LEVEL')
+                customization_level=customization_level  # Use enforced level
             )
             
             if not result['success']:
@@ -268,32 +432,7 @@ class TenantViewSet(viewsets.ModelViewSet):
             'tenant_slug': tenant.tenant_slug
         })
     
-    @action(detail=True, methods=['post'])
-    def activate(self, request, tenant_slug=None):
-        """
-        Activate/reactivate tenant
-        
-        POST /api/v2/admin/tenants/{slug}/activate/
-        """
-        tenant = self.get_object()
-        
-        if tenant.subscription_status == 'ACTIVE':
-            return Response({
-                'success': False,
-                'error': 'Tenant is already active'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        tenant.subscription_status = 'ACTIVE'
-        tenant.is_active = True
-        tenant.save()
-        
-        invalidate_tenant_cache(tenant.tenant_slug)
-        
-        return Response({
-            'success': True,
-            'message': f'Tenant "{tenant.company_name}" activated',
-            'tenant_slug': tenant.tenant_slug
-        })
+    
     
     @action(detail=True, methods=['get'])
     def usage(self, request, tenant_slug=None):

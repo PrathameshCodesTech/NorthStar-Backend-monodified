@@ -70,13 +70,12 @@ def copy_framework_to_tenant(tenant, framework_id, customization_level='CONTROL_
         
         logger.info(
             f"Starting framework distribution: {framework.name} → {tenant.tenant_slug} "
-            f"(connection: {connection_name}, mode: {tenant.isolation_mode})"
+            f"(connection: {connection_name}, mode: SCHEMA)"
         )
         
-        # ✅ Set search_path for SCHEMA mode BEFORE transaction
-        if tenant.isolation_mode == 'SCHEMA':
-            set_schema_search_path(connection_name, tenant.schema_name)
-            logger.info(f"Search path set to: {tenant.schema_name}")
+        # ✅ Always set search_path (SCHEMA mode only)
+        set_schema_search_path(connection_name, tenant.schema_name)
+        logger.info(f"Search path set to: {tenant.schema_name}")
         
         # Copy framework with transaction
         with transaction.atomic(using=connection_name):
@@ -120,6 +119,7 @@ def copy_framework_to_tenant(tenant, framework_id, customization_level='CONTROL_
 def get_tenant_connection_name(tenant):
     """
     Get Django database connection name for tenant
+    Always uses SCHEMA mode
     
     Args:
         tenant: TenantDatabaseInfo instance
@@ -127,12 +127,8 @@ def get_tenant_connection_name(tenant):
     Returns:
         str: Database connection name (registered connection with search_path)
     """
-    if tenant.isolation_mode == 'DATABASE':
-        # Dedicated database
-        return f"{tenant.tenant_slug}_compliance_db"
-    else:
-        # Schema isolation - use the registered connection with search_path
-        return f"{tenant.tenant_slug}_compliance_db"
+    # Always SCHEMA mode - return registered connection
+    return f"{tenant.tenant_slug}_compliance_db"
     
 
 def set_schema_search_path(connection_name, schema_name):

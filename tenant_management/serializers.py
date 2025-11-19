@@ -29,7 +29,7 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
             'id', 'code', 'name', 'description',
             'monthly_price', 'annual_price', 'discount_percentage',
             'max_users', 'max_frameworks', 'max_controls', 'storage_gb',
-            'default_isolation_mode', 'default_customization_level',
+            'default_customization_level',
             'support_level', 'features', 'is_active', 'sort_order'
         ]
         read_only_fields = ['id']
@@ -191,16 +191,16 @@ class TenantDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'tenant_slug', 'company_name', 'company_email', 'company_phone',
             'subscription_plan', 'subscription_status', 'subscription_status_display',
-            'subscription_start_date', 'subscription_end_date', 'trial_end_date',
+            'subscription_start_date', 'subscription_end_date',
             'provisioning_status', 'provisioning_status_display', 'provisioning_error',
-            'isolation_mode', 'schema_name', 'database_name',
+            'schema_name', 'database_name',
             'current_user_count', 'current_framework_count', 'current_control_count',
             'storage_used_gb', 'usage_summary', 'limits_summary',
             'provisioned_at', 'last_health_check',
             'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = [
-            'id', 'provisioning_status', 'isolation_mode', 'schema_name',
+            'id', 'provisioning_status', 'schema_name',
             'database_name', 'provisioned_at', 'last_health_check',
             'created_at', 'updated_at'
         ]
@@ -253,7 +253,7 @@ class TenantListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'tenant_slug', 'company_name', 'company_email',
             'subscription_plan_name', 'subscription_status', 'provisioning_status',
-            'isolation_mode', 'current_user_count', 'current_framework_count',
+            'schema_name', 'current_user_count', 'current_framework_count',
             'created_at', 'is_active'
         ]
 
@@ -451,3 +451,88 @@ class TenantBillingHistorySerializer(serializers.ModelSerializer):
             'addon_storage_amount', 'total_amount', 'payment_status',
             'payment_date', 'payment_method', 'invoice_number', 'invoice_url'
         ]
+
+
+# ============================================================================
+# TENANT ACTIVATION SERIALIZERS (Payment-First Flow)
+# ============================================================================
+
+class TenantActivationSerializer(serializers.Serializer):
+    """
+    Activate tenant after payment confirmation
+    Creates schema, runs migrations, subscribes to framework
+    """
+    
+    framework_id = serializers.UUIDField(
+        required=True,
+        help_text="Framework to subscribe to after activation"
+    )
+    customization_level = serializers.ChoiceField(
+        choices=['VIEW_ONLY', 'CONTROL_LEVEL', 'FULL'],
+        default='CONTROL_LEVEL',
+        help_text="Customization level (enforced by plan)"
+    )
+    payment_id = serializers.CharField(
+        required=False,
+        help_text="Payment transaction ID for reference"
+    )
+    
+    def validate_framework_id(self, value):
+        """Validate framework exists"""
+        from templates_host.models import Framework
+        
+        try:
+            Framework.objects.get(id=value, is_active=True, status='ACTIVE')
+        except Framework.DoesNotExist:
+            raise serializers.ValidationError("Framework not found or inactive")
+        
+        return value
+    
+    def validate(self, data):
+        """Validate tenant can be activated"""
+        tenant = self.context.get('tenant')
+        
+        if not tenant:
+            raise serializers.ValidationError("Tenant not found")
+        
+        if tenant.subscription_status != 'PENDING_PAYMENT':
+            raise serializers.ValidationError(
+                f"Tenant cannot be activated. Current status: {tenant.subscription_status}"
+            )
+        
+        if tenant.provisioning_status != 'PENDING':
+            raise serializers.ValidationError(
+                "Tenant is already provisioned"
+            )
+        
+        return data
+    
+    def create(self, validated_data):
+        """Activate tenant"""
+        from .tenant_utils import activate_tenant_with_framework
+        
+        tenant = self.context['tenant']
+        framework_id = str(validated_data['framework_id'])
+        customization_level = validated_data.get('customization_level', 'CONTROL_LEVEL')
+        
+        # Enforce customization level based on plan
+        plan = tenant.subscription_plan
+        if plan.code == 'BASIC':
+            customization_level = 'VIEW_ONLY'
+        elif plan.code == 'PROFESSIONAL':
+            customization_level = 'CONTROL_LEVEL'
+        # ENTERPRISE can use requested level
+        
+        # Activate tenant
+        result = activate_tenant_with_framework(
+            tenant_slug=tenant.tenant_slug,
+            framework_id=framework_id,
+            customization_level=customization_level
+        )
+        
+        if not result['success']:
+            raise serializers.ValidationError(
+                f"Activation failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        return result['tenant_info']

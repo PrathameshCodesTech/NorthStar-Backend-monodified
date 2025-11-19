@@ -84,17 +84,7 @@ class SubscriptionPlan(BaseModel):
         default=False,
         help_text="Single Sign-On (SSO) support"
     )
-    
-    # Isolation mode
-    default_isolation_mode = models.CharField(
-        max_length=20,
-        choices=[
-            ('SCHEMA', 'Schema-based (shared database)'),
-            ('DATABASE', 'Database-based (dedicated)'),
-        ],
-        default='SCHEMA',
-        help_text="Default database isolation strategy for this plan"
-    )
+
     
     # Customization level
     default_customization_level = models.CharField(
@@ -158,22 +148,25 @@ class TenantDatabaseInfo(BaseModel):
     )
     
     # Database Connection Details
+    # Database Connection Details (SCHEMA mode uses main database credentials)
     database_name = models.CharField(
         max_length=100,
-        help_text="PostgreSQL database name (if DATABASE mode)"
+        default='main_compliance_system_db',
+        help_text="Always uses main database (SCHEMA mode)"
     )
     database_user = models.CharField(
         max_length=50,
         blank=True,
-        help_text="Database user (if DATABASE mode)"
+        help_text="Uses main database user"
     )
     database_password = models.TextField(
-        help_text="Encrypted password (Fernet encryption)"
+        blank=True,
+        help_text="Not used in SCHEMA mode (uses main DB credentials)"
     )
     database_host = models.CharField(
         max_length=100,
         default='localhost',
-        help_text="Database host address"
+        help_text="Database host (main database)"
     )
     database_port = models.CharField(
         max_length=10,
@@ -181,22 +174,13 @@ class TenantDatabaseInfo(BaseModel):
         help_text="Database port"
     )
     
-    # ============ HYBRID APPROACH FIELDS ============
-    isolation_mode = models.CharField(
-        max_length=20,
-        choices=[
-            ('DATABASE', 'Separate Database'),
-            ('SCHEMA', 'Schema in Shared Database'),
-        ],
-        default='SCHEMA',
-        help_text="Database isolation strategy"
-    )
+   
+    # ============ SCHEMA MODE (Always) ============
     schema_name = models.CharField(
         max_length=100,
-        blank=True,
-        help_text="Schema name if SCHEMA mode (e.g., 'acmecorp_schema')"
+        help_text="Schema name (e.g., 'acmecorp_schema')"
     )
-    # ================================================
+
     
     # Subscription
     subscription_plan = models.ForeignKey(
@@ -208,13 +192,14 @@ class TenantDatabaseInfo(BaseModel):
     subscription_status = models.CharField(
         max_length=20,
         choices=[
-            ('TRIAL', 'Trial Period'),
+            ('PENDING_PAYMENT', 'Pending Payment'),
             ('ACTIVE', 'Active'),
             ('SUSPENDED', 'Suspended'),
             ('CANCELLED', 'Cancelled'),
             ('EXPIRED', 'Expired'),
+            ('DELETED', 'Deleted'),  # ← NEW
         ],
-        default='TRIAL'
+        default='PENDING_PAYMENT'
     )
     subscription_start_date = models.DateField(
     null=True,
@@ -227,11 +212,7 @@ class TenantDatabaseInfo(BaseModel):
         blank=True,
         help_text="When subscription ends (null = ongoing)"
     )
-    trial_end_date = models.DateField(
-        null=True,
-        blank=True,
-        help_text="When trial period ends"
-    )
+    
     
     # Usage Tracking
     current_user_count = models.IntegerField(

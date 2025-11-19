@@ -24,77 +24,6 @@ logger = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 1800  # 30 minutes
 
 
-def generate_database_credentials(tenant_slug):
-    """Generate secure database credentials for tenant"""
-    db_name = f"{tenant_slug}_compliance_db"
-    db_user = f"{tenant_slug}_user"
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-    password = ''.join(secrets.choice(alphabet) for _ in range(16))
-    return db_name, db_user, password
-
-
-def create_postgresql_database(db_name, db_user, db_password):
-    """
-    Create PostgreSQL database and user (DATABASE isolation mode)
-    Idempotent: Won't fail if already exists
-    """
-    conn = psycopg2.connect(
-        host=settings.DATABASES['default']['HOST'],
-        port=settings.DATABASES['default']['PORT'],
-        user=settings.DATABASES['default']['USER'],
-        password=settings.DATABASES['default']['PASSWORD'],
-        database='postgres'
-    )
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-    cursor = conn.cursor()
-
-    try:
-        # 1) Create user if doesn't exist
-        cursor.execute("SELECT 1 FROM pg_roles WHERE rolname=%s;", (db_user,))
-        role_exists = cursor.fetchone() is not None
-
-        if not role_exists:
-            cursor.execute(
-                sql.SQL("CREATE USER {} WITH PASSWORD %s")
-                .format(sql.Identifier(db_user)),
-                (db_password,)
-            )
-            logger.info(f"[SUCCESS] Created database user: {db_user}")
-        else:
-            cursor.execute(
-                sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD %s")
-                .format(sql.Identifier(db_user)),
-                (db_password,)
-            )
-            logger.info(f"[UPDATE] Updated password for user: {db_user}")
-
-        # 2) Create database if doesn't exist
-        cursor.execute("SELECT 1 FROM pg_database WHERE datname=%s;", (db_name,))
-        db_exists = cursor.fetchone() is not None
-
-        if not db_exists:
-            cursor.execute(
-                sql.SQL("CREATE DATABASE {} OWNER {}")
-                .format(sql.Identifier(db_name), sql.Identifier(db_user))
-            )
-            logger.info(f"[SUCCESS] Created database: {db_name}")
-        else:
-            logger.info(f"[UPDATE] Database already exists: {db_name}")
-
-        # 3) Grant privileges
-        cursor.execute(
-            sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}")
-            .format(sql.Identifier(db_name), sql.Identifier(db_user))
-        )
-        logger.info(f"[SUCCESS] Granted privileges to {db_user} on {db_name}")
-
-    except Exception as e:
-        logger.error(f"[ERROR] Error creating database: {e}")
-        raise
-    finally:
-        cursor.close()
-        conn.close()
-
 
 def create_postgresql_schema(schema_name, db_name='main_compliance_system_db'):
     """
@@ -145,8 +74,8 @@ def create_postgresql_schema(schema_name, db_name='main_compliance_system_db'):
 
 def add_tenant_database_to_django(tenant_info):
     """
-    Register tenant database/schema in Django connections
-    Supports both DATABASE and SCHEMA isolation modes
+    Register tenant schema in Django connections
+    SCHEMA mode only: Uses search_path to route to tenant schema
     """
     connection_name = f"{tenant_info.tenant_slug}_compliance_db"
     
@@ -157,31 +86,17 @@ def add_tenant_database_to_django(tenant_info):
     
     default_db = settings.DATABASES['default'].copy()
     
-    if tenant_info.isolation_mode == 'SCHEMA':
-        # SCHEMA mode: Same database, different schema via search_path
-        db_config = {
-            **default_db,
-            'NAME': 'main_compliance_system_db',  # Shared database
-            'OPTIONS': {
-                'options': f'-c search_path={tenant_info.schema_name},public'
-            },
-            'CONN_MAX_AGE': 300,
-            'CONN_HEALTH_CHECKS': True,
-        }
-        logger.info(f"[SUCCESS] Configured SCHEMA mode: {tenant_info.schema_name}")
-    else:
-        # DATABASE mode: Separate database
-        db_config = {
-            **default_db,
-            'NAME': tenant_info.database_name,
-            'USER': tenant_info.database_user,
-            'PASSWORD': tenant_info.decrypt_password(),
-            'HOST': tenant_info.database_host,
-            'PORT': tenant_info.database_port,
-            'CONN_MAX_AGE': 300,
-            'CONN_HEALTH_CHECKS': True,
-        }
-        logger.info(f"[SUCCESS] Configured DATABASE mode: {tenant_info.database_name}")
+    # SCHEMA mode: Same database, different schema via search_path
+    db_config = {
+        **default_db,
+        'NAME': 'main_compliance_system_db',  # Shared database
+        'OPTIONS': {
+            'options': f'-c search_path={tenant_info.schema_name},public'
+        },
+        'CONN_MAX_AGE': 300,
+        'CONN_HEALTH_CHECKS': True,
+    }
+    logger.info(f"[SUCCESS] Configured SCHEMA mode: {tenant_info.schema_name}")
     
     # Register connection
     connections.databases[connection_name] = db_config
@@ -202,20 +117,19 @@ def add_tenant_database_to_django(tenant_info):
 
 def run_tenant_migrations(tenant_slug, connection_name):
     """
-    Run company_compliance migrations on tenant database/schema
-    MONOLITH VERSION - No service calls!
+    Run company_compliance migrations on tenant schema
+    SCHEMA mode: Sets search_path before running migrations
     """
     try:
         logger.info(f"[LOADING] Running migrations for {tenant_slug} on {connection_name}")
         
-        # Get tenant info to determine isolation mode
+        # Get tenant info
         tenant = TenantDatabaseInfo.objects.get(tenant_slug=tenant_slug)
         
-        # For SCHEMA mode, set search_path before migrations
-        if tenant.isolation_mode == 'SCHEMA':
-            with connections[connection_name].cursor() as cursor:
-                cursor.execute(f"SET search_path TO {tenant.schema_name}, public;")
-                logger.info(f"[SUCCESS] Set search_path to {tenant.schema_name}")
+        # Set search_path to tenant schema
+        with connections[connection_name].cursor() as cursor:
+            cursor.execute(f"SET search_path TO {tenant.schema_name}, public;")
+            logger.info(f"[SUCCESS] Set search_path to {tenant.schema_name}")
         
         # Run migrations using Django's call_command
         call_command(
@@ -224,7 +138,7 @@ def run_tenant_migrations(tenant_slug, connection_name):
             database=connection_name,
             verbosity=2,
             interactive=False,
-            run_syncdb=True
+            
         )
         
         logger.info(f"[SUCCESS] Migrations completed for {tenant_slug}")
@@ -236,7 +150,7 @@ def run_tenant_migrations(tenant_slug, connection_name):
         return {'success': False, 'error': error_msg}
     
 
-def force_create_company_tables(connection_name, schema_name=None):
+def force_create_company_tables(connection_name, schema_name):
     """
     Force create all company_compliance tables
     Use when migrations fail (especially for SCHEMA isolation mode)
@@ -247,177 +161,288 @@ def force_create_company_tables(connection_name, schema_name=None):
         ControlAssignment, AssessmentCampaign, AssessmentResponse,
         EvidenceDocument, ComplianceReport
     )
+    from django.db import transaction
     
     try:
         logger.info(f"[LOADING] Force creating tables for connection: {connection_name}")
         
-        with connections[connection_name].cursor() as cursor:
-            # Set search_path if schema mode
-            if schema_name:
-                cursor.execute(f"SET search_path TO {schema_name}, public;")
-                logger.info(f"[SUCCESS] Set search_path to {schema_name}")
+        # Rollback any pending transaction first
+        connection = connections[connection_name]
+        if connection.in_atomic_block:
+            logger.warning(f"[WARN] Rolling back failed transaction")
+            connection.rollback()
         
-        # Create tables using schema editor
-        with connections[connection_name].schema_editor() as schema_editor:
-            models = [
-                CompanyFramework, CompanyDomain, CompanyCategory, CompanySubcategory,
-                CompanyControl, CompanyAssessmentQuestion, CompanyEvidenceRequirement,
-                ControlAssignment, AssessmentCampaign, AssessmentResponse,
-                EvidenceDocument, ComplianceReport
-            ]
-            
-            for model in models:
-                try:
-                    schema_editor.create_model(model)
-                    logger.info(f"[SUCCESS] Created table: {model._meta.db_table}")
-                except Exception as e:
-                    # Table might already exist, that's okay
-                    logger.debug(f"[INFO] Table {model._meta.db_table}: {str(e)}")
+        # Set search_path to tenant schema
+        with connection.cursor() as cursor:
+            cursor.execute(f"SET search_path TO {schema_name}, public;")
+            logger.info(f"[SUCCESS] Set search_path to {schema_name}")
+        
+        # Create tables using atomic transaction
+        with transaction.atomic(using=connection_name):
+            with connection.schema_editor() as schema_editor:
+                models = [
+                    CompanyFramework, CompanyDomain, CompanyCategory, CompanySubcategory,
+                    CompanyControl, CompanyAssessmentQuestion, CompanyEvidenceRequirement,
+                    ControlAssignment, AssessmentCampaign, AssessmentResponse,
+                    EvidenceDocument, ComplianceReport
+                ]
+                
+                for model in models:
+                    try:
+                        schema_editor.create_model(model)
+                        logger.info(f"[SUCCESS] Created table: {model._meta.db_table}")
+                    except Exception as e:
+                        # Table might already exist, check if that's the issue
+                        if 'already exists' in str(e).lower():
+                            logger.warning(f"[SKIP] Table {model._meta.db_table} already exists")
+                        else:
+                            # Real error, propagate it
+                            raise
         
         logger.info(f"[SUCCESS] Force table creation completed")
         return {'success': True, 'message': 'Tables created manually'}
     
     except Exception as e:
         logger.error(f"[ERROR] Force table creation failed: {e}", exc_info=True)
+        
+        # Rollback connection on error
+        try:
+            connections[connection_name].rollback()
+        except:
+            pass
+            
         return {'success': False, 'error': str(e)}
 
 
-def provision_tenant(tenant_slug, company_name, subscription_plan_code='BASIC'):
+def create_tenant_record(tenant_slug, company_name, company_email, subscription_plan_code='BASIC'):
     """
-    Complete tenant provisioning - MONOLITH VERSION
-    Creates database/schema, runs migrations, ready for frameworks
-    """
-    logger.info(f"\n[PROVISIONING] Provisioning tenant: {company_name} ({tenant_slug})")
+    Create tenant record ONLY - no schema creation
+    Used for payment-first flow
     
-    steps = {
-        'credentials': None,
-        'tenant_record': None,
-        'isolation_decision': None,
-        'postgres_provision': None,
-        'django_connection': None,
-        'migrations': None,
-        'final_status': None,
-    }
+    Returns:
+        dict: {
+            'success': bool,
+            'tenant_info': TenantDatabaseInfo,
+            'payment_required': bool,
+            'amount': Decimal
+        }
+    """
+    logger.info(f"\n[TENANT RECORD] Creating tenant record: {company_name} ({tenant_slug})")
     
     try:
         # 1) Get subscription plan
         from .models import SubscriptionPlan
         subscription_plan = SubscriptionPlan.objects.get(code=subscription_plan_code)
         
-        # 2) Decide isolation mode
-        # if subscription_plan.code == 'ENTERPRISE':
-        #     isolation_mode = 'DATABASE'
-        # else:
-        #     isolation_mode = 'SCHEMA'
-        isolation_mode = 'SCHEMA'
+        # 2) Check if tenant already exists
+        from .models import TenantDatabaseInfo
+        if TenantDatabaseInfo.objects.filter(tenant_slug=tenant_slug).exists():
+            raise ValueError(f"Tenant with slug '{tenant_slug}' already exists")
         
-        steps['isolation_decision'] = {'mode': isolation_mode, 'plan': subscription_plan_code}
-        logger.info(f"[INFO] Isolation mode: {isolation_mode}")
-        
-        # 3) Generate credentials
-        # if isolation_mode == 'DATABASE':
-        #     db_name, db_user, db_password = generate_database_credentials(tenant_slug)
-        #     schema_name = None
-        # else:
-        #     db_name = 'main_compliance_system_db'
-        #     db_user = settings.DATABASES['default']['USER']
-        #     db_password = settings.DATABASES['default']['PASSWORD']
-        #     schema_name = f"{tenant_slug}_schema"
-
-        db_name = 'main_compliance_system_db'
-        db_user = settings.DATABASES['default']['USER']
-        db_password = settings.DATABASES['default']['PASSWORD']
+        # 3) Create tenant record (minimal)
         schema_name = f"{tenant_slug}_schema"
-
         
-        steps['credentials'] = {
-            'db_name': db_name,
-            'schema_name': schema_name,
-            'mode': isolation_mode
-        }
-        
-        # 4) Create tenant record
         tenant_info = TenantDatabaseInfo.objects.create(
             tenant_slug=tenant_slug,
             company_name=company_name,
-            database_name=db_name,
-            database_user=db_user,
+            company_email=company_email,
+            database_name='main_compliance_system_db',
+            database_user=settings.DATABASES['default']['USER'],
             database_host=settings.DATABASES['default']['HOST'],
             database_port=settings.DATABASES['default']['PORT'],
             subscription_plan=subscription_plan,
-            provisioning_status='PROVISIONING',
-            isolation_mode=isolation_mode,
+            subscription_status='PENDING_PAYMENT',  # ← Wait for payment
+            provisioning_status='PENDING',          # ← Not provisioned yet
             schema_name=schema_name,
-            is_active=True,\
-            subscription_start_date=timezone.now().date(),  # ✅ ADD THIS
-            trial_end_date=timezone.now().date() + timedelta(days=30),  # ✅ ADD THIS (30-day trial)
+            is_active=False,  # ← Not active until payment
         )
-        tenant_info.encrypt_password(db_password)
+        
+        # Don't encrypt password since we're not creating schema yet
+        tenant_info.database_password = ''
         tenant_info.save()
-        steps['tenant_record'] = {'id': str(tenant_info.id)}
-        logger.info(f"[SUCCESS] Created tenant record: {tenant_info.id}")
         
-        # 5) Create PostgreSQL database or schema
-        # if isolation_mode == 'DATABASE':
-        #     create_postgresql_database(db_name, db_user, db_password)
-        #     steps['postgres_provision'] = {'type': 'database', 'name': db_name}
-        # else:
-        #     create_postgresql_schema(schema_name)
-        #     steps['postgres_provision'] = {'type': 'schema', 'name': schema_name}
-        
-        create_postgresql_schema(schema_name)
-        steps['postgres_provision'] = {'type': 'schema', 'name': schema_name}
-
-
-        # 6) Register Django connection
-        connection_name = add_tenant_database_to_django(tenant_info)
-        steps['django_connection'] = {'connection_name': connection_name}
-        
-        # 7) Run migrations
-        # 7) Run migrations
-        migration_result = run_tenant_migrations(tenant_slug, connection_name)
-        steps['migrations'] = migration_result
-        
-        # 7b) If migrations failed, force create tables
-        if not migration_result['success']:
-            logger.warning(f"[WARN] Migrations failed, forcing table creation...")
-            force_result = force_create_company_tables(
-                connection_name=connection_name,
-                schema_name=tenant_info.schema_name if tenant_info.isolation_mode == 'SCHEMA' else None
-            )
-            steps['force_tables'] = force_result
-            
-            # Update migration result if force creation succeeded
-            if force_result['success']:
-                migration_result = force_result
-                logger.info(f"[SUCCESS] Tables created via force method")
-        
-        # 8) Update status
-        if migration_result['success']:
-            tenant_info.provisioning_status = 'ACTIVE'
-            tenant_info.subscription_status = 'TRIAL'  # Start with trial
-            logger.info(f"[SUCCESS] Tenant {tenant_slug} provisioned successfully!")
-        else:
-            tenant_info.provisioning_status = 'FAILED'
-            logger.error(f"[ERROR] Tenant {tenant_slug} provisioning failed")
-        
-        tenant_info.save()
-        steps['final_status'] = tenant_info.provisioning_status
+        logger.info(f"[SUCCESS] Tenant record created: {tenant_info.id}")
+        logger.info(f"[INFO] Status: PENDING_PAYMENT - Awaiting payment confirmation")
         
         return {
-            'success': migration_result['success'],
+            'success': True,
             'tenant_info': tenant_info,
-            'connection_name': connection_name,
-            'steps': steps
+            'payment_required': True,
+            'amount': subscription_plan.monthly_price,
+            'message': 'Tenant record created. Payment required to activate.'
         }
         
     except Exception as e:
-        logger.error(f"[ERROR] Provisioning error: {e}")
-        if 'tenant_info' in locals():
-            tenant_info.provisioning_status = 'FAILED'
-            tenant_info.save()
+        logger.error(f"[ERROR] Failed to create tenant record: {e}")
         raise
 
+
+def activate_tenant_with_framework(tenant_slug, framework_id, customization_level='CONTROL_LEVEL'):
+    """
+    Activate tenant after payment success
+    Creates schema, runs migrations, subscribes to framework
+    
+    This should be called AFTER payment is confirmed
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'tenant_info': TenantDatabaseInfo,
+            'connection_name': str,
+            'framework_name': str
+        }
+    """
+    logger.info(f"\n[ACTIVATION] Activating tenant: {tenant_slug}")
+    
+    steps = {
+        'get_tenant': None,
+        'create_schema': None,
+        'django_connection': None,
+        'migrations': None,
+        'framework_subscription': None,
+        'final_status': None,
+    }
+    
+    try:
+        # 1) Get tenant record
+        from .models import TenantDatabaseInfo
+        tenant_info = TenantDatabaseInfo.objects.get(
+            tenant_slug=tenant_slug,
+            subscription_status='PENDING_PAYMENT'
+        )
+        steps['get_tenant'] = {'id': str(tenant_info.id)}
+        logger.info(f"[INFO] Found tenant: {tenant_info.company_name}")
+        
+        # 2) Create PostgreSQL schema
+        schema_name = tenant_info.schema_name
+        create_postgresql_schema(schema_name)
+        steps['create_schema'] = {'schema_name': schema_name}
+        logger.info(f"[SUCCESS] Created schema: {schema_name}")
+        
+        # 3) Register Django connection
+        connection_name = add_tenant_database_to_django(tenant_info)
+        steps['django_connection'] = {'connection_name': connection_name}
+        logger.info(f"[SUCCESS] Registered Django connection")
+        
+        # 4) Run migrations
+        # 4) Create tables directly (more reliable than migrations for SCHEMA mode)
+        logger.info(f"[LOADING] Creating tables directly in {tenant_info.schema_name}")
+        
+        migration_result = force_create_company_tables(
+            connection_name=connection_name,
+            schema_name=tenant_info.schema_name
+        )
+        steps['migrations'] = migration_result
+        
+        if not migration_result['success']:
+            raise Exception(f"Failed to create tables: {migration_result.get('error')}")
+        
+        logger.info(f"[SUCCESS] Tables created in {tenant_info.schema_name}")
+            
+
+        # 4.5) Set tenant to ACTIVE before framework distribution
+        tenant_info.subscription_status = 'ACTIVE'
+        tenant_info.provisioning_status = 'ACTIVE'
+        tenant_info.is_active = True
+        tenant_info.save()
+        logger.info(f"[SUCCESS] Tenant status set to ACTIVE")
+        
+        
+        # 5) Subscribe to framework
+        from templates_host.distribution_utils import copy_framework_to_tenant
+        
+        distribution_result = copy_framework_to_tenant(
+            tenant=tenant_info,
+            framework_id=framework_id,
+            customization_level=customization_level
+        )
+        
+        if not distribution_result['success']:
+            raise Exception(f"Framework distribution failed: {distribution_result.get('error')}")
+        
+        steps['framework_subscription'] = {
+            'framework_id': framework_id,
+            'framework_name': distribution_result.get('framework_name'),
+            'customization_level': customization_level
+        }
+        logger.info(f"[SUCCESS] Framework subscribed: {distribution_result.get('framework_name')}")
+        
+       
+        tenant_info.subscription_start_date = timezone.now().date()
+        tenant_info.provisioned_at = timezone.now()
+        tenant_info.save()
+        
+        steps['final_status'] = 'ACTIVE'
+        logger.info(f"[SUCCESS] Tenant {tenant_slug} activated successfully!")
+        
+        # 7) Invalidate cache
+        invalidate_tenant_cache(tenant_slug)
+        
+        return {
+            'success': True,
+            'tenant_info': tenant_info,
+            'connection_name': connection_name,
+            'framework_name': distribution_result.get('framework_name'),
+            'steps': steps,
+            'message': 'Tenant activated and framework subscribed successfully'
+        }
+        
+    except TenantDatabaseInfo.DoesNotExist:
+        logger.error(f"[ERROR] Tenant not found or already activated: {tenant_slug}")
+        raise ValueError(f"Tenant '{tenant_slug}' not found or already activated")
+        
+    except Exception as e:
+        logger.error(f"[ERROR] Activation failed: {e}")
+        
+        # Rollback: Update tenant status to failed
+        if 'tenant_info' in locals():
+            tenant_info.provisioning_status = 'FAILED'
+            tenant_info.provisioning_error = str(e)
+            tenant_info.save()
+        
+        raise
+
+
+def delete_pending_tenant(tenant_slug):
+    """
+    Delete tenant record if payment failed
+    Only works if status is PENDING_PAYMENT and no schema exists
+    
+    Returns:
+        dict: {'success': bool, 'message': str}
+    """
+    logger.info(f"\n[CLEANUP] Deleting pending tenant: {tenant_slug}")
+    
+    try:
+        from .models import TenantDatabaseInfo
+        
+        tenant_info = TenantDatabaseInfo.objects.get(
+            tenant_slug=tenant_slug,
+            subscription_status='PENDING_PAYMENT',
+            provisioning_status='PENDING'
+        )
+        
+        # Mark as deleted instead of hard delete (for audit trail)
+        tenant_info.subscription_status = 'DELETED'
+        tenant_info.is_active = False
+        tenant_info.save()
+        
+        logger.info(f"[SUCCESS] Tenant marked as deleted: {tenant_slug}")
+        
+        return {
+            'success': True,
+            'message': f'Tenant {tenant_slug} deleted (payment not completed)'
+        }
+        
+    except TenantDatabaseInfo.DoesNotExist:
+        logger.warning(f"[WARN] Tenant not found or already provisioned: {tenant_slug}")
+        return {
+            'success': False,
+            'message': 'Tenant not found or already activated'
+        }
+    except Exception as e:
+        logger.error(f"[ERROR] Failed to delete tenant: {e}")
+        raise
 
 def load_all_tenant_databases():
     """Load all active tenant databases into Django connections at startup"""
@@ -453,7 +478,6 @@ def get_cached_tenant_db_info(tenant_slug):
                 'company_name': tenant.company_name,
                 'status': tenant.subscription_status,
                 'provisioning_status': tenant.provisioning_status,
-                'isolation_mode': tenant.isolation_mode,
                 'schema_name': tenant.schema_name,
             }
             

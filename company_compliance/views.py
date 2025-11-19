@@ -56,6 +56,13 @@ from .permissions import (
     CanViewAuditLogs,
 )
 
+# Import plan-based permissions from tenant_management
+from tenant_management.permissions import (
+    CanCustomizeControls as PlanCanCustomizeControls,
+    CanCreateCustomFrameworks as PlanCanCreateCustomFrameworks,
+    HasAPIAccess,
+)
+
 
 # ============================================================================
 # FRAMEWORK VIEWS
@@ -67,9 +74,11 @@ class CompanyFrameworkViewSet(viewsets.ReadOnlyModelViewSet):
     
     GET /api/v1/company/frameworks/
     GET /api/v1/company/frameworks/{id}/
+    
+    Note: Creating/editing frameworks requires Enterprise plan
     """
     
-    permission_classes = [IsAuthenticated, IsTenantMember]
+    permission_classes = [IsAuthenticated, IsTenantMember, PlanCanCreateCustomFrameworks]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'customization_level']
     search_fields = ['name', 'full_name', 'description']
@@ -97,9 +106,11 @@ class CompanyControlViewSet(viewsets.ModelViewSet):
     GET /api/v1/company/controls/
     GET /api/v1/company/controls/{id}/
     PATCH /api/v1/company/controls/{id}/customize/
+    
+    Note: Customizing controls requires Professional or Enterprise plan
     """
     
-    permission_classes = [IsAuthenticated, IsTenantMember]
+    permission_classes = [IsAuthenticated, IsTenantMember, PlanCanCustomizeControls]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['control_type', 'frequency', 'risk_level', 'is_customized']
     search_fields = ['control_code', 'title', 'custom_title', 'description']
@@ -128,6 +139,7 @@ class CompanyControlViewSet(viewsets.ModelViewSet):
             return CompanyControlCustomizeSerializer
         return CompanyControlDetailSerializer
     
+    
     @action(detail=True, methods=['patch'])
     def customize(self, request, pk=None):
         """
@@ -139,14 +151,102 @@ class CompanyControlViewSet(viewsets.ModelViewSet):
             "custom_description": "Our specific requirements...",
             "custom_procedures": "1. Step one..."
         }
+        
+        Plan-based restrictions:
+        - BASIC: Cannot customize at all (403)
+        - PROFESSIONAL: Can customize title, description, objective, procedures
+        - ENTERPRISE: Can customize everything + add/remove controls
         """
         control = self.get_object()
         
+        # ============ ENFORCE PLAN-BASED CUSTOMIZATION ============
+        from core.database_router import get_current_tenant
+        from tenant_management.models import TenantDatabaseInfo
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        tenant_slug = get_current_tenant()
+        
+        try:
+            tenant = TenantDatabaseInfo.objects.get(
+                tenant_slug=tenant_slug,
+                is_active=True
+            )
+            plan = tenant.subscription_plan
+            
+            # Check basic permission (BASIC plan blocked by permission class, but double-check)
+            if not plan.can_customize_controls:
+                return Response({
+                    'success': False,
+                    'error': 'Control customization requires Professional or Enterprise plan',
+                    'upgrade_required': True,
+                    'current_plan': plan.code,
+                    'upgrade_to': 'PROFESSIONAL'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Check if trying to modify control structure (ENTERPRISE only)
+            restricted_fields = ['control_id', 'control_code', 'framework', 'domain', 'category', 'subcategory']
+            attempting_restricted = [field for field in restricted_fields if field in request.data]
+            
+            if attempting_restricted:
+                if not plan.can_create_custom_frameworks:
+                    return Response({
+                        'success': False,
+                        'error': 'Modifying control structure requires Enterprise plan',
+                        'upgrade_required': True,
+                        'current_plan': plan.code,
+                        'upgrade_to': 'ENTERPRISE',
+                        'restricted_fields': attempting_restricted,
+                        'message': 'You can only modify control descriptions with Professional plan'
+                    }, status=status.HTTP_403_FORBIDDEN)
+            
+            # PROFESSIONAL: Only allow specific fields
+            allowed_fields_professional = [
+                'custom_title', 'custom_description', 
+                'custom_objective', 'custom_procedures',
+                'custom_implementation_guidance'
+            ]
+            
+            # ENTERPRISE: Can modify all fields (no restriction)
+            if plan.code == 'PROFESSIONAL':
+                # Validate only allowed fields are being modified
+                disallowed = [k for k in request.data.keys() if k not in allowed_fields_professional]
+                if disallowed:
+                    return Response({
+                        'success': False,
+                        'error': f'Fields {disallowed} require Enterprise plan to modify',
+                        'upgrade_required': True,
+                        'current_plan': plan.code,
+                        'upgrade_to': 'ENTERPRISE',
+                        'allowed_fields': allowed_fields_professional,
+                        'restricted_fields': disallowed
+                    }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Log customization attempt for audit
+            logger.info(
+                f"[CONTROL CUSTOMIZATION] Tenant: {tenant_slug}, "
+                f"Plan: {plan.code}, Control: {control.control_code}, "
+                f"User: {request.user.username}, "
+                f"Fields: {list(request.data.keys())}"
+            )
+            
+        except TenantDatabaseInfo.DoesNotExist:
+            logger.error(f"[CONTROL CUSTOMIZATION] Tenant not found: {tenant_slug}")
+            return Response({
+                'success': False,
+                'error': 'Tenant not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        # ==========================================================
+        
+        # Check control-level flag
         if not control.can_customize:
             return Response({
-                'error': 'Control customization not allowed in your plan'
+                'success': False,
+                'error': 'This control does not allow customization',
+                'message': 'Control customization is disabled for this specific control'
             }, status=status.HTTP_403_FORBIDDEN)
         
+        # Proceed with customization
         serializer = self.get_serializer(control, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -154,6 +254,7 @@ class CompanyControlViewSet(viewsets.ModelViewSet):
         return Response({
             'success': True,
             'message': 'Control customized successfully',
+            'plan': plan.code,
             'control': CompanyControlDetailSerializer(control).data
         })
     
