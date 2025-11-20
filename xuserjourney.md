@@ -1519,3 +1519,111 @@ ACTIVE (schema created, framework copied)
 **All working!** 🚀
 
 Need anything else?
+
+
+Step 3: Test API Endpoints with Postman/curl
+Test 1: Submit Assignment for Review
+bashPOST http://localhost:8000/api/v1/company/assignments/{assignment_id}/submit_for_review/
+Headers:
+  Authorization: Bearer <token>
+  X-Tenant-Slug: luck
+Expected Response:
+json{
+  "success": true,
+  "message": "Assignment submitted for review",
+  "assignment": {
+    "id": "...",
+    "status": "COMPLETED",
+    "review_status": "PENDING_REVIEW"
+  }
+}
+
+Test 2: Get Pending Reviews (Manager/Admin)
+bashGET http://localhost:8000/api/v1/company/assignments/pending_review/
+Headers:
+  Authorization: Bearer <manager-token>
+  X-Tenant-Slug: luck
+Expected Response:
+json{
+  "total": 1,
+  "assignments": [
+    {
+      "id": "...",
+      "control": {...},
+      "assigned_to_username": "john",
+      "status": "COMPLETED",
+      "review_status": "PENDING_REVIEW",
+      "submitted_for_review_at": "2025-11-19T10:30:00Z"
+    }
+  ]
+}
+
+Test 3: Approve Assignment
+bashPOST http://localhost:8000/api/v1/company/assignments/{assignment_id}/approve/
+Headers:
+  Authorization: Bearer <manager-token>
+  X-Tenant-Slug: luck
+Body:
+{
+  "notes": "Approved. Good work implementing the control."
+}
+Expected Response:
+json{
+  "success": true,
+  "message": "Assignment approved successfully",
+  "assignment": {
+    "id": "...",
+    "status": "COMPLETED",
+    "review_status": "APPROVED",
+    "approved_by_username": "manager",
+    "approved_at": "2025-11-19T10:35:00Z",
+    "approval_notes": "Approved. Good work implementing the control."
+  }
+}
+
+Test 4: Reject Assignment
+bashPOST http://localhost:8000/api/v1/company/assignments/{assignment_id}/reject/
+Headers:
+  Authorization: Bearer <manager-token>
+  X-Tenant-Slug: luck
+Body:
+{
+  "reason": "Missing evidence document. Please upload the policy document."
+}
+Expected Response:
+json{
+  "success": true,
+  "message": "Assignment rejected. User will be notified to make revisions.",
+  "assignment": {
+    "id": "...",
+    "status": "REJECTED",
+    "review_status": "REJECTED",
+    "rejected_by_username": "manager",
+    "rejected_at": "2025-11-19T10:40:00Z",
+    "rejection_reason": "Missing evidence document. Please upload the policy document.",
+    "revision_count": 1
+  }
+}
+
+Test 5: Test Separation of Duties (Should Fail)
+bash# Employee tries to approve their own assignment
+POST http://localhost:8000/api/v1/company/assignments/{assignment_id}/approve/
+Headers:
+  Authorization: Bearer <employee-token>  # Same user who submitted
+  X-Tenant-Slug: luck
+Expected Response (403 Forbidden):
+json{
+  "success": false,
+  "error": "Cannot approve your own assignment (separation of duties)"
+}
+
+Test 6: Test Without Permission (Should Fail)
+bash# Employee tries to approve (no permission)
+POST http://localhost:8000/api/v1/company/assignments/{assignment_id}/approve/
+Headers:
+  Authorization: Bearer <employee-token>
+  X-Tenant-Slug: luck
+Expected Response (403 Forbidden):
+json{
+  "detail": "You do not have permission to perform this action."
+}

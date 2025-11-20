@@ -143,29 +143,77 @@ class Command(BaseCommand):
                                'frameworks, and all compliance activities.',
                 'is_system_role': True,
                 'permissions': [
+                    # Administrative
                     ('manage_users', 'Can manage users', 'Invite, remove, and manage user roles'),
                     ('manage_frameworks', 'Can manage frameworks', 'Subscribe to and customize frameworks'),
                     ('manage_settings', 'Can manage settings', 'Update company settings and preferences'),
-                    ('assign_controls', 'Can assign controls', 'Assign controls to team members'),
-                    ('create_campaigns', 'Can create campaigns', 'Create and manage assessment campaigns'),
-                    ('view_reports', 'Can view reports', 'View compliance reports and analytics'),
                     ('manage_billing', 'Can manage billing', 'View and manage billing information'),
                     ('view_audit_logs', 'Can view audit logs', 'View system audit logs'),
+                    
+                    # Control & Campaign Management
+                    ('assign_controls', 'Can assign controls', 'Assign controls to team members'),
+                    ('create_campaigns', 'Can create campaigns', 'Create and manage assessment campaigns'),
+                    
+                    # Reporting
+                    ('view_reports', 'Can view reports', 'View compliance reports and analytics'),
+                    ('generate_reports', 'Can generate reports', 'Generate compliance reports'),
+                    ('export_data', 'Can export data', 'Export compliance data'),
+                    
+                    # ⭐ NEW: Approval Workflow Permissions
+                    ('approve_assignments', 'Can approve assignments', 'Approve control assignments'),
+                    ('reject_assignments', 'Can reject assignments', 'Reject control assignments'),
+                    ('approve_responses', 'Can approve responses', 'Approve assessment responses'),
+                    ('reject_responses', 'Can reject responses', 'Reject assessment responses'),
+                    ('verify_evidence', 'Can verify evidence', 'Verify evidence documents'),
+                    ('reject_evidence', 'Can reject evidence', 'Reject evidence documents'),
                 ]
             },
             {
                 'code': 'COMPLIANCE_MANAGER',
                 'name': 'Compliance Manager',
                 'description': 'Manages compliance activities and assessments. Can create campaigns, '
-                               'assign controls, and generate reports.',
+                               'assign controls, review responses, and verify evidence.',
                 'is_system_role': True,
                 'permissions': [
+                    # Control & Campaign Management
                     ('assign_controls', 'Can assign controls', 'Assign controls to team members'),
                     ('create_campaigns', 'Can create campaigns', 'Create and manage assessment campaigns'),
+                    
+                    # Review & Approval
                     ('review_responses', 'Can review responses', 'Review and approve assessment responses'),
-                    ('view_reports', 'Can view reports', 'View compliance reports and analytics'),
                     ('manage_evidence', 'Can manage evidence', 'Upload and manage evidence documents'),
                     ('customize_controls', 'Can customize controls', 'Customize control descriptions'),
+                    
+                    # Reporting
+                    ('view_reports', 'Can view reports', 'View compliance reports and analytics'),
+                    ('generate_reports', 'Can generate reports', 'Generate compliance reports'),
+                    
+                    # ⭐ NEW: Approval Workflow Permissions
+                    ('approve_assignments', 'Can approve assignments', 'Approve control assignments'),
+                    ('reject_assignments', 'Can reject assignments', 'Reject control assignments'),
+                    ('approve_responses', 'Can approve responses', 'Approve assessment responses'),
+                    ('reject_responses', 'Can reject responses', 'Reject assessment responses'),
+                    ('verify_evidence', 'Can verify evidence', 'Verify evidence documents'),
+                    ('reject_evidence', 'Can reject evidence', 'Reject evidence documents'),
+                ]
+            },
+            {
+                'code': 'MANAGER',
+                'name': 'Manager',
+                'description': 'Team manager with approval authority. Can assign controls and '
+                               'approve team assignments.',
+                'is_system_role': True,
+                'permissions': [
+                    # Control Management
+                    ('assign_controls', 'Can assign controls', 'Assign controls to team members'),
+                    ('view_frameworks', 'Can view frameworks', 'View all frameworks and controls'),
+                    ('view_responses', 'Can view responses', 'View all assessment responses'),
+                    ('view_evidence', 'Can view evidence', 'View all evidence documents'),
+                    ('view_reports', 'Can view reports', 'View compliance reports'),
+                    
+                    # ⭐ NEW: Assignment Approval (Manager-level only)
+                    ('approve_assignments', 'Can approve assignments', 'Approve control assignments'),
+                    ('reject_assignments', 'Can reject assignments', 'Reject control assignments'),
                 ]
             },
             {
@@ -222,7 +270,7 @@ class Command(BaseCommand):
                 )
                 if perm_created:
                     self.stdout.write(f'    → Added permission: {perm_code}')
-
+                    
     def seed_framework_categories(self):
         """Create framework categories"""
         self.stdout.write(self.style.HTTP_INFO('\n📁 Creating Framework Categories...'))

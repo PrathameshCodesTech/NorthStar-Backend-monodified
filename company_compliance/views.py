@@ -54,6 +54,9 @@ from .permissions import (
     CanExportData,
     CanManageBilling,
     CanViewAuditLogs,
+    CanApproveAssignments,
+    CanApproveResponses,
+    CanVerifyEvidence,
 )
 
 # Import plan-based permissions from tenant_management
@@ -425,6 +428,164 @@ class ControlAssignmentViewSet(viewsets.ModelViewSet):
         })
     
 
+
+    @action(detail=True, methods=['post'], permission_classes=[CanApproveAssignments])
+    def submit_for_review(self, request, pk=None):
+        """
+        Submit assignment for review
+        
+        POST /api/v1/company/assignments/{id}/submit_for_review/
+        """
+        assignment = self.get_object()
+        
+        # Only assigned user can submit
+        if assignment.assigned_to_user_id != request.user.id:
+            return Response({
+                'error': 'Only the assigned user can submit for review'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Must be completed first
+        if assignment.status != 'COMPLETED':
+            return Response({
+                'error': 'Assignment must be completed before submitting for review'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update status
+        assignment.review_status = 'PENDING_REVIEW'
+        assignment.submitted_for_review_at = timezone.now()
+        assignment.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Assignment submitted for review',
+            'assignment': ControlAssignmentDetailSerializer(assignment).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanApproveAssignments])
+    def approve(self, request, pk=None):
+        """
+        Approve control assignment
+        
+        POST /api/v1/company/assignments/{id}/approve/
+        {
+            "notes": "Approved. Good work on implementing the control."
+        }
+        """
+        from .approval_utils import can_approve_assignment, approve_assignment
+        
+        assignment = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can approve
+        can_approve, reason = can_approve_assignment(
+            user=request.user,
+            membership=membership,
+            assignment=assignment
+        )
+        
+        if not can_approve:
+            return Response({
+                'success': False,
+                'error': reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Approve it
+        notes = request.data.get('notes', '')
+        success, message = approve_assignment(assignment, request.user, notes)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'assignment': ControlAssignmentDetailSerializer(assignment).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanApproveAssignments])
+    def reject(self, request, pk=None):
+        """
+        Reject control assignment
+        
+        POST /api/v1/company/assignments/{id}/reject/
+        {
+            "reason": "Evidence document is missing. Please upload the policy document."
+        }
+        """
+        from .approval_utils import can_reject_assignment, reject_assignment
+        
+        assignment = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can reject
+        can_reject, check_reason = can_reject_assignment(
+            user=request.user,
+            membership=membership,
+            assignment=assignment
+        )
+        
+        if not can_reject:
+            return Response({
+                'success': False,
+                'error': check_reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get rejection reason (required)
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response({
+                'success': False,
+                'error': 'Rejection reason is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Reject it
+        success, message = reject_assignment(assignment, request.user, reason)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'assignment': ControlAssignmentDetailSerializer(assignment).data
+        })
+    
+    @action(detail=False, methods=['get'])
+    def pending_review(self, request):
+        """
+        Get assignments pending review (for reviewers)
+        
+        GET /api/v1/company/assignments/pending_review/
+        """
+        membership = request.tenant_membership
+        
+        # Check if user can review
+        if not membership.has_permission('approve_assignments'):
+            return Response({
+                'error': 'You do not have permission to review assignments'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get pending assignments (exclude own assignments)
+        assignments = ControlAssignment.objects.filter(
+            review_status__in=['PENDING_REVIEW', 'UNDER_REVIEW'],
+            is_active=True
+        ).exclude(
+            assigned_to_user_id=request.user.id  # Cannot review own work
+        ).select_related('control').order_by('submitted_for_review_at')
+        
+        serializer = ControlAssignmentListSerializer(assignments, many=True)
+        
+        return Response({
+            'total': assignments.count(),
+            'assignments': serializer.data
+        })
+
 # ... (Part 1 continues here) ...
 
 
@@ -708,6 +869,189 @@ class AssessmentResponseViewSet(viewsets.ModelViewSet):
         })
 
 
+    @action(detail=True, methods=['post'])
+    def submit(self, request, pk=None):
+        """
+        Submit response for approval
+        
+        POST /api/v1/company/responses/{id}/submit/
+        """
+        response = self.get_object()
+        
+        # Only submitter can submit
+        if response.responded_by_user_id != request.user.id:
+            return Response({
+                'error': 'Only the responder can submit for approval'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Must be in draft
+        if response.review_status not in ['DRAFT', 'REVISION_REQUIRED']:
+            return Response({
+                'error': f'Cannot submit response in {response.review_status} status'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update status
+        response.review_status = 'SUBMITTED'
+        response.responded_at = timezone.now()
+        response.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Response submitted for approval',
+            'response': AssessmentResponseDetailSerializer(response).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanApproveResponses])
+    def approve(self, request, pk=None):
+        """
+        Approve assessment response
+        
+        POST /api/v1/company/responses/{id}/approve/
+        {
+            "notes": "All evidence verified. Response is compliant."
+        }
+        """
+        from .approval_utils import can_approve_response, approve_response
+        
+        response = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can approve
+        can_approve, reason = can_approve_response(
+            user=request.user,
+            membership=membership,
+            response=response
+        )
+        
+        if not can_approve:
+            return Response({
+                'success': False,
+                'error': reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Approve it
+        notes = request.data.get('notes', '')
+        success, message = approve_response(response, request.user, notes)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update campaign progress
+        campaign = response.campaign
+        if campaign:
+            campaign.completed_controls = AssessmentResponse.objects.filter(
+                campaign=campaign,
+                review_status='APPROVED',
+                is_active=True
+            ).count()
+            
+            campaign.compliant_count = AssessmentResponse.objects.filter(
+                campaign=campaign,
+                review_status='APPROVED',
+                compliance_status='PASS',
+                is_active=True
+            ).count()
+            
+            if campaign.total_controls > 0:
+                campaign.completion_percentage = (
+                    campaign.completed_controls / campaign.total_controls
+                ) * 100
+                campaign.compliance_score = (
+                    campaign.compliant_count / campaign.total_controls
+                ) * 100
+            
+            campaign.save()
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'response': AssessmentResponseDetailSerializer(response).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanApproveResponses])
+    def reject(self, request, pk=None):
+        """
+        Reject assessment response
+        
+        POST /api/v1/company/responses/{id}/reject/
+        {
+            "reason": "Question 3 answer contradicts evidence. Please review and revise."
+        }
+        """
+        from .approval_utils import can_reject_response, reject_response
+        
+        response = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can reject
+        can_reject, check_reason = can_reject_response(
+            user=request.user,
+            membership=membership,
+            response=response
+        )
+        
+        if not can_reject:
+            return Response({
+                'success': False,
+                'error': check_reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get rejection reason (required)
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response({
+                'success': False,
+                'error': 'Rejection reason is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Reject it
+        success, message = reject_response(response, request.user, reason)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'response': AssessmentResponseDetailSerializer(response).data
+        })
+    
+    @action(detail=False, methods=['get'], permission_classes=[CanApproveResponses])
+    def pending_approval(self, request):
+        """
+        Get responses pending approval (for compliance officers)
+        
+        GET /api/v1/company/responses/pending_approval/
+        """
+        membership = request.tenant_membership
+        
+        # Check permission
+        if not membership.has_permission('approve_responses'):
+            return Response({
+                'error': 'You do not have permission to approve responses'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get pending responses (exclude own responses)
+        responses = AssessmentResponse.objects.filter(
+            review_status__in=['SUBMITTED', 'UNDER_REVIEW'],
+            is_active=True
+        ).exclude(
+            responded_by_user_id=request.user.id
+        ).select_related('campaign', 'control').order_by('responded_at')
+        
+        serializer = AssessmentResponseListSerializer(responses, many=True)
+        
+        return Response({
+            'total': responses.count(),
+            'responses': serializer.data
+        })
+
 # ============================================================================
 # EVIDENCE VIEWS
 # ============================================================================
@@ -818,6 +1162,156 @@ class EvidenceDocumentViewSet(viewsets.ModelViewSet):
             'success': True,
             'message': 'Evidence verified',
             'evidence': EvidenceDocumentSerializer(evidence).data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def submit_for_verification(self, request, pk=None):
+        """
+        Submit evidence for verification
+        
+        POST /api/v1/company/evidence/{id}/submit_for_verification/
+        """
+        evidence = self.get_object()
+        
+        # Only uploader can submit
+        if evidence.uploaded_by_user_id != request.user.id:
+            return Response({
+                'error': 'Only the uploader can submit for verification'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Update status
+        evidence.verification_status = 'SUBMITTED'
+        evidence.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Evidence submitted for verification',
+            'evidence': EvidenceDocumentSerializer(evidence).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanVerifyEvidence])
+    def verify(self, request, pk=None):
+        """
+        Verify evidence document
+        
+        POST /api/v1/company/evidence/{id}/verify/
+        {
+            "notes": "Document verified. Valid signature from CISO."
+        }
+        """
+        from .approval_utils import can_verify_evidence, verify_evidence
+        
+        evidence = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can verify
+        can_verify, reason = can_verify_evidence(
+            user=request.user,
+            membership=membership,
+            evidence=evidence
+        )
+        
+        if not can_verify:
+            return Response({
+                'success': False,
+                'error': reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Verify it
+        notes = request.data.get('notes', '')
+        success, message = verify_evidence(evidence, request.user, notes)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'evidence': EvidenceDocumentSerializer(evidence).data
+        })
+    
+    @action(detail=True, methods=['post'], permission_classes=[CanVerifyEvidence])
+    def reject(self, request, pk=None):
+        """
+        Reject evidence document
+        
+        POST /api/v1/company/evidence/{id}/reject/
+        {
+            "reason": "Document is draft version, not signed. Please upload final signed version."
+        }
+        """
+        from .approval_utils import can_reject_evidence, reject_evidence
+        
+        evidence = self.get_object()
+        membership = request.tenant_membership
+        
+        # Check if user can reject
+        can_reject, check_reason = can_reject_evidence(
+            user=request.user,
+            membership=membership,
+            evidence=evidence
+        )
+        
+        if not can_reject:
+            return Response({
+                'success': False,
+                'error': check_reason
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get rejection reason (required)
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response({
+                'success': False,
+                'error': 'Rejection reason is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Reject it
+        success, message = reject_evidence(evidence, request.user, reason)
+        
+        if not success:
+            return Response({
+                'success': False,
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': message,
+            'evidence': EvidenceDocumentSerializer(evidence).data
+        })
+    
+    @action(detail=False, methods=['get'], permission_classes=[CanVerifyEvidence])
+    def pending_verification(self, request):
+        """
+        Get evidence pending verification (for compliance officers)
+        
+        GET /api/v1/company/evidence/pending_verification/
+        """
+        membership = request.tenant_membership
+        
+        # Check permission
+        if not membership.has_permission('verify_evidence'):
+            return Response({
+                'error': 'You do not have permission to verify evidence'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get pending evidence (exclude own uploads)
+        evidence = EvidenceDocument.objects.filter(
+            verification_status__in=['SUBMITTED', 'UNDER_VERIFICATION'],
+            is_active=True
+        ).exclude(
+            uploaded_by_user_id=request.user.id
+        ).select_related('control').order_by('uploaded_at')
+        
+        serializer = EvidenceDocumentSerializer(evidence, many=True)
+        
+        return Response({
+            'total': evidence.count(),
+            'evidence': serializer.data
         })
     
     @action(detail=True, methods=['post'])

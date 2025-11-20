@@ -402,13 +402,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
             return CategoryBasicSerializer
         return CategoryDetailSerializer
     
-    @action(detail=True, methods=['get'])
-    def subcategories(self, request, pk=None):
-        """Get subcategories for a category"""
-        category = self.get_object()
-        subcategories = category.subcategories.filter(is_active=True).order_by('sort_order')
-        serializer = SubcategoryBasicSerializer(subcategories, many=True)
-        return Response(serializer.data)
+
     
     @action(detail=True, methods=['get'])
     def subcategories(self, request, pk=None):
@@ -522,13 +516,6 @@ class SubcategoryViewSet(viewsets.ModelViewSet):
         serializer = ControlBasicSerializer(controls, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['get'])
-    def controls(self, request, pk=None):
-        """Get controls for a subcategory"""
-        subcategory = self.get_object()
-        controls = subcategory.controls.filter(is_active=True).order_by('sort_order')
-        serializer = ControlBasicSerializer(controls, many=True)
-        return Response(serializer.data)
     
     # ============================================================================
     # ✅ NEW: LINKING ACTIONS

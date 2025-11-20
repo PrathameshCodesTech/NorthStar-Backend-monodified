@@ -620,6 +620,94 @@ class CanExportData(BasePermission):
 # OBJECT-LEVEL PERMISSIONS
 # ============================================================================
 
+
+# ============================================================================
+# ⭐ NEW: APPROVAL WORKFLOW PERMISSIONS
+# ============================================================================
+
+class CanApproveAssignments(BasePermission):
+    """
+    Permission to approve control assignments
+    Uses RolePermission system + separation of duties check
+    """
+    
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        # SuperAdmin bypass
+        if request.user.is_superuser:
+            return True
+        
+        # Check tenant membership exists
+        if not hasattr(request, 'tenant_membership'):
+            return False
+        
+        membership = request.tenant_membership
+        
+        # Check permission via RolePermission
+        return membership.has_permission('approve_assignments')
+    
+    def has_object_permission(self, request, view, obj):
+        # Cannot approve own assignment (separation of duties)
+        return obj.assigned_to_user_id != request.user.id
+
+
+class CanApproveResponses(BasePermission):
+    """
+    Permission to approve assessment responses
+    Uses RolePermission system + separation of duties check
+    """
+    
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        if request.user.is_superuser:
+            return True
+        
+        if not hasattr(request, 'tenant_membership'):
+            return False
+        
+        membership = request.tenant_membership
+        
+        # Check permission via RolePermission
+        return membership.has_permission('approve_responses')
+    
+    def has_object_permission(self, request, view, obj):
+        # Cannot approve own response (separation of duties)
+        return obj.responded_by_user_id != request.user.id
+
+
+class CanVerifyEvidence(BasePermission):
+    """
+    Permission to verify evidence documents
+    Uses RolePermission system + separation of duties check
+    """
+    
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        if request.user.is_superuser:
+            return True
+        
+        if not hasattr(request, 'tenant_membership'):
+            return False
+        
+        membership = request.tenant_membership
+        
+        # Check permission via RolePermission
+        return membership.has_permission('verify_evidence')
+    
+    def has_object_permission(self, request, view, obj):
+        # Cannot verify own evidence (separation of duties)
+        return obj.uploaded_by_user_id != request.user.id
+
+
+
+
+
 class IsAssignedToControl(BasePermission):
     """
     User is assigned to the specific control

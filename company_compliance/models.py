@@ -534,6 +534,74 @@ class ControlAssignment(BaseModel):
         help_text="Notes added upon completion"
     )
     
+    # ============================================================================
+    # ⭐ NEW: APPROVAL WORKFLOW FIELDS
+    # ============================================================================
+    review_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('NOT_SUBMITTED', 'Not Submitted'),
+            ('PENDING_REVIEW', 'Pending Review'),
+            ('UNDER_REVIEW', 'Under Review'),
+            ('APPROVED', 'Approved'),
+            ('REJECTED', 'Rejected'),
+            ('REVISION_REQUIRED', 'Revision Required'),
+        ],
+        default='NOT_SUBMITTED',
+        help_text="Approval workflow status"
+    )
+    
+    submitted_for_review_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When assignment was submitted for review"
+    )
+    
+    approved_by_user_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="User ID who approved this assignment"
+    )
+    approved_by_username = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Username of approver (cached)"
+    )
+    approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When assignment was approved"
+    )
+    approval_notes = models.TextField(
+        blank=True,
+        help_text="Notes added by approver"
+    )
+    
+    rejected_by_user_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="User ID who rejected this assignment"
+    )
+    rejected_by_username = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Username of rejector (cached)"
+    )
+    rejected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When assignment was rejected"
+    )
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Reason for rejection (required when rejecting)"
+    )
+    
+    revision_count = models.IntegerField(
+        default=0,
+        help_text="Number of times assignment was revised"
+    )
+    # ============================================================================
     # Notifications
     notification_sent = models.BooleanField(
         default=False,
@@ -748,6 +816,69 @@ class AssessmentResponse(BaseModel):
         blank=True,
         help_text="Reviewer's notes"
     )
+
+    # ============================================================================
+    # ⭐ NEW: APPROVAL WORKFLOW FIELDS
+    # ============================================================================
+    review_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('DRAFT', 'Draft'),
+            ('SUBMITTED', 'Submitted'),
+            ('UNDER_REVIEW', 'Under Review'),
+            ('APPROVED', 'Approved'),
+            ('REJECTED', 'Rejected'),
+            ('REVISION_REQUIRED', 'Revision Required'),
+        ],
+        default='DRAFT',
+        help_text="Approval workflow status"
+    )
+    
+    approved_by_user_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="User ID who approved this response"
+    )
+    approved_by_username = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Username of approver (cached)"
+    )
+    approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When response was approved"
+    )
+    approval_notes = models.TextField(
+        blank=True,
+        help_text="Notes added by approver"
+    )
+    
+    rejected_by_user_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="User ID who rejected this response"
+    )
+    rejected_by_username = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Username of rejector (cached)"
+    )
+    rejected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When response was rejected"
+    )
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Specific feedback on why rejected"
+    )
+    
+    revision_count = models.IntegerField(
+        default=0,
+        help_text="Number of times response was revised"
+    )
+    # ============================================================================
     
     class Meta:
         db_table = 'assessment_responses'
@@ -855,6 +986,54 @@ class EvidenceDocument(BaseModel):
         blank=True,
         help_text="When verified"
     )
+
+    # ============================================================================
+    # ⭐ NEW: APPROVAL WORKFLOW FIELDS
+    # ============================================================================
+    verification_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('PENDING', 'Pending Verification'),
+            ('SUBMITTED', 'Submitted for Review'),
+            ('UNDER_VERIFICATION', 'Under Verification'),
+            ('VERIFIED', 'Verified'),
+            ('REJECTED', 'Rejected'),
+        ],
+        default='PENDING',
+        help_text="Verification workflow status"
+    )
+    
+    rejected_by_user_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="User ID who rejected this evidence"
+    )
+    rejected_by_username = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Username of rejector (cached)"
+    )
+    rejected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When evidence was rejected"
+    )
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Reason for evidence rejection"
+    )
+    
+    resubmission_count = models.IntegerField(
+        default=0,
+        help_text="Number of times evidence was resubmitted"
+    )
+    
+    previous_versions = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="History of previous rejected versions"
+    )
+    # ============================================================================
     
     class Meta:
         db_table = 'evidence_documents'

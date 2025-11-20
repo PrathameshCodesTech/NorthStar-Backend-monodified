@@ -29,8 +29,9 @@ class SubscriptionPlan(BaseModel):
         max_length=20,
         unique=True,
         help_text="Plan code like 'BASIC', 'PROFESSIONAL', 'ENTERPRISE'"
-    )
-    name = models.CharField(max_length=100)
+    )  
+    name = models.CharField(max_length=100)  
+
     description = models.TextField()
     
     # Pricing
@@ -189,6 +190,7 @@ class TenantDatabaseInfo(BaseModel):
         related_name='tenants',
         help_text="Current subscription plan"
     )
+
     subscription_status = models.CharField(
         max_length=20,
         choices=[
