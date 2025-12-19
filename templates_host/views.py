@@ -110,17 +110,20 @@ class FrameworkViewSet(viewsets.ModelViewSet):
     
     def get_serializer_class(self):
         """Return appropriate serializer"""
-        if self.action == 'list':
-            return FrameworkBasicSerializer
-        elif self.action == 'create':
+        if self.action == 'create':
             return FrameworkCreateSerializer
         
-        # Check for deep parameter
+        # Check for deep parameter (works for both list and retrieve)
         deep = self.request.query_params.get('deep') in ('1', 'true', 'True')
         if deep:
-            return FrameworkDeepSerializer
+            return FrameworkDeepSerializer  # ← Use deep for list AND retrieve
+        
+        # Use basic for list without deep
+        if self.action == 'list':
+            return FrameworkBasicSerializer
         
         return FrameworkDetailSerializer
+
     
     @action(detail=True, methods=['get'])
     def domains(self, request, pk=None):

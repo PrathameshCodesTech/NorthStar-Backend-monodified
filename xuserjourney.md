@@ -1627,3 +1627,104 @@ Expected Response (403 Forbidden):
 json{
   "detail": "You do not have permission to perform this action."
 }
+
+
+
+
+
+
+
+
+
+GET /api/v2/admin/billing-history/
+GET /api/v2/admin/billing-history/{id}/
+GET /api/v2/admin/billing-history/pending_payments/
+```
+
+### **Usage:**
+```
+GET /api/v2/admin/usage-logs/
+GET /api/v2/admin/usage-logs/{id}/
+GET /api/v2/admin/usage-logs/summary/
+```
+
+### **Audit:**
+```
+GET /api/v2/admin/audit-logs/
+GET /api/v2/admin/audit-logs/{id}/
+GET /api/v2/admin/audit-logs/by_admin/
+GET /api/v2/admin/audit-logs/recent/
+```
+
+### **Tenant:**
+```
+POST /api/v2/admin/tenants/{slug}/reactivate/  ← NEW!
+
+
+src/
+├── services/
+│   └── tenantService.js
+│
+├── admin/
+│   ├── pages/
+│   │   ├── SubscriptionPlansList.jsx
+│   │   ├── TenantsDashboard.jsx
+│   │   ├── TenantDetailView.jsx
+│   │   ├── BillingHistory.jsx
+│   │   ├── AuditLogs.jsx
+│   │   └── UsageAnalytics.jsx
+│   │
+│   ├── components/
+│   │   ├── TenantCard.jsx
+│   │   ├── TenantStatsCard.jsx
+│   │   ├── TenantStatusBadge.jsx
+│   │   ├── SubscriptionPlanCard.jsx
+│   │   ├── UsageProgressBar.jsx
+│   │   ├── FrameworkSubscriptionList.jsx
+│   │   ├── BillingTable.jsx
+│   │   └── AuditLogTable.jsx
+│   │
+│   ├── modals/
+│   │   ├── CreatePlanModal.jsx
+│   │   ├── EditPlanModal.jsx
+│   │   ├── CreateTenantModal.jsx
+│   │   ├── ActivateTenantModal.jsx
+│   │   ├── SubscribeFrameworkModal.jsx
+│   │   └── SuspendTenantModal.jsx
+│   │
+│   └── pages/
+│       ├── TenantsDashboard.css
+│       └── TenantDetailView.css
+
+
+
+
+Let says-> 
+
+AcmeCorp purchases:
+
+1. ISO 27001 - PROFESSIONAL
+
+   ├── Price: $599/month
+
+   ├── User limit: 50 users (for ISO 27001 only)
+
+   └── Customization: Can customize ISO controls
+
+2. GDPR - BASIC
+
+   ├── Price: $299/month
+
+   ├── User limit: 20 users (for GDPR only)
+
+   └── Customization: View-only (no customization)
+
+
+
+now that Acmecorp has 70 users but this user is defined on frameworks 
+
+right Like
+
+we will fetched the user -> membeship -> tenant slug-> and framework id then users ? hows on the basis of framework id each user will be  linked to framewok id
+
+then but the user is will be in compnay compliance so it will 

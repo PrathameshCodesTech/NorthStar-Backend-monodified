@@ -7,7 +7,7 @@ from rest_framework import serializers
 from django.core.validators import EmailValidator
 from .models import (
     SubscriptionPlan, TenantDatabaseInfo, FrameworkSubscription,
-    TenantUsageLog, TenantBillingHistory
+    TenantUsageLog, TenantBillingHistory,SuperAdminAuditLog
 )
 from .validators import validate_and_normalize_slug
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -536,3 +536,23 @@ class TenantActivationSerializer(serializers.Serializer):
             )
         
         return result['tenant_info']
+    
+# ============================================================================
+# AUDIT LOG SERIALIZER
+# ============================================================================
+
+class SuperAdminAuditLogSerializer(serializers.ModelSerializer):
+    """SuperAdmin audit log entry"""
+    
+    action_display = serializers.CharField(
+        source='get_action_display',
+        read_only=True
+    )
+    
+    class Meta:
+        model = SuperAdminAuditLog
+        fields = [
+            'id', 'admin_user_id', 'admin_username', 'action', 'action_display',
+            'tenant_slug', 'ip_address', 'details', 'reason', 'timestamp'
+        ]
+        read_only_fields = ['id', 'timestamp']

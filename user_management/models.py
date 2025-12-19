@@ -237,3 +237,4 @@ class TenantInvitation(models.Model):
     def is_expired(self):
         """Check if invitation has expired"""
         return timezone.now() > self.expires_at and self.status == 'PENDING'
+    

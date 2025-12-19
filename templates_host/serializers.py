@@ -77,7 +77,7 @@ class FrameworkCreateSerializer(serializers.ModelSerializer):
         model = Framework
         fields = [
             'name', 'full_name', 'description', 'version',
-            'status', 'effective_date', 'category'
+            'status', 'effective_date', 'category',"applicable_industries", "applicable_regions", "compliance_authority",
         ]
     
     def validate_name(self, value):

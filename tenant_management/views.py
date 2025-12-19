@@ -14,14 +14,14 @@ from django.db.models import Count, Q
 
 from .models import (
     SubscriptionPlan, TenantDatabaseInfo, FrameworkSubscription,
-    TenantUsageLog, TenantBillingHistory
+    TenantUsageLog, TenantBillingHistory,SuperAdminAuditLog
 )
 from .serializers import (
     SubscriptionPlanSerializer, SubscriptionPlanListSerializer,
     TenantCreateSerializer, TenantDetailSerializer, TenantListSerializer,
     TenantUpdateSerializer, FrameworkSubscriptionSerializer,
     FrameworkSubscribeSerializer, TenantUsageLogSerializer,
-    TenantBillingHistorySerializer
+    TenantBillingHistorySerializer, SuperAdminAuditLogSerializer
 )
 from .permissions import IsSuperAdmin, IsSuperAdminOrReadOnly
 from .tenant_utils import (
@@ -432,6 +432,32 @@ class TenantViewSet(viewsets.ModelViewSet):
             'tenant_slug': tenant.tenant_slug
         })
     
+
+    @action(detail=True, methods=['post'])
+    def reactivate(self, request, tenant_slug=None):
+        """
+        Reactivate suspended tenant
+        
+        POST /api/v2/admin/tenants/{slug}/reactivate/
+        """
+        tenant = self.get_object()
+        
+        if tenant.subscription_status != 'SUSPENDED':
+            return Response({
+                'success': False,
+                'error': f'Can only reactivate suspended tenants. Current status: {tenant.subscription_status}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        tenant.subscription_status = 'ACTIVE'
+        tenant.save()
+        
+        invalidate_tenant_cache(tenant.tenant_slug)
+        
+        return Response({
+            'success': True,
+            'message': f'Tenant "{tenant.company_name}" reactivated successfully',
+            'tenant_slug': tenant.tenant_slug
+        })
     
     
     @action(detail=True, methods=['get'])
@@ -508,3 +534,132 @@ class FrameworkSubscriptionViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['tenant__tenant_slug', 'status', 'customization_level']
     search_fields = ['framework_name', 'tenant__company_name']
+
+
+# ============================================================================
+# BILLING HISTORY VIEWS
+# ============================================================================
+
+class TenantBillingHistoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Billing history management (read-only)
+    
+    list: Get all billing records
+    retrieve: Get specific invoice details
+    """
+    
+    queryset = TenantBillingHistory.objects.all()
+    serializer_class = TenantBillingHistorySerializer
+    permission_classes = [IsSuperAdmin]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['tenant__tenant_slug', 'payment_status', 'billing_period_start']
+    search_fields = ['invoice_number', 'tenant__company_name']
+    ordering_fields = ['billing_period_start', 'payment_date', 'total_amount']
+    ordering = ['-billing_period_start']
+    
+    @action(detail=False, methods=['get'])
+    def pending_payments(self, request):
+        """
+        Get all pending payments
+        
+        GET /api/v2/admin/billing-history/pending_payments/
+        """
+        pending = self.queryset.filter(payment_status='PENDING')
+        serializer = self.get_serializer(pending, many=True)
+        
+        return Response({
+            'count': pending.count(),
+            'total_amount': sum([float(b.total_amount) for b in pending]),
+            'invoices': serializer.data
+        })
+
+
+# ============================================================================
+# USAGE LOG VIEWS
+# ============================================================================
+
+class TenantUsageLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Usage logs (read-only)
+    
+    list: Get all usage logs
+    retrieve: Get specific log
+    """
+    
+    queryset = TenantUsageLog.objects.all()
+    serializer_class = TenantUsageLogSerializer
+    permission_classes = [IsSuperAdmin]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['tenant__tenant_slug', 'log_date']
+    ordering_fields = ['log_date']
+    ordering = ['-log_date']
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """
+        Get usage summary across all tenants
+        
+        GET /api/v2/admin/usage-logs/summary/
+        """
+        from django.db.models import Sum, Avg
+        
+        summary = self.queryset.aggregate(
+            total_users=Sum('user_count'),
+            total_frameworks=Sum('framework_count'),
+            total_controls=Sum('control_count'),
+            total_storage_gb=Sum('storage_used_gb'),
+            avg_api_calls=Avg('api_calls_count')
+        )
+        
+        return Response(summary)
+
+
+# ============================================================================
+# AUDIT LOG VIEWS
+# ============================================================================
+
+class SuperAdminAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    SuperAdmin audit logs (read-only)
+    
+    list: Get all audit logs
+    retrieve: Get specific log entry
+    """
+    
+    queryset = SuperAdminAuditLog.objects.all()
+    serializer_class = SuperAdminAuditLogSerializer
+    permission_classes = [IsSuperAdmin]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['admin_user_id', 'action', 'tenant_slug']
+    search_fields = ['admin_username', 'tenant_slug', 'reason']
+    ordering_fields = ['timestamp']
+    ordering = ['-timestamp']
+    
+    @action(detail=False, methods=['get'])
+    def by_admin(self, request):
+        """
+        Get logs grouped by admin user
+        
+        GET /api/v2/admin/audit-logs/by_admin/
+        """
+        from django.db.models import Count
+        
+        admin_summary = self.queryset.values(
+            'admin_user_id', 'admin_username'
+        ).annotate(
+            action_count=Count('id')
+        ).order_by('-action_count')
+        
+        return Response(list(admin_summary))
+    
+    @action(detail=False, methods=['get'])
+    def recent(self, request):
+        """
+        Get recent audit logs (last 100)
+        
+        GET /api/v2/admin/audit-logs/recent/
+        """
+        recent_logs = self.queryset.order_by('-timestamp')[:100]
+        serializer = self.get_serializer(recent_logs, many=True)
+        
+        return Response(serializer.data)

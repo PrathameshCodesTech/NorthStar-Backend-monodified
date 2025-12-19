@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
+from . import auth_views  # ← ADD THIS
 
 app_name = 'templates_host'
 
@@ -16,4 +17,8 @@ router.register(r'evidence', views.EvidenceRequirementViewSet, basename='evidenc
 
 urlpatterns = [
     path('', include(router.urls)),
+    
+    # ← ADD THESE TWO LINES:
+    path('auth/login/', auth_views.login_view, name='login'),
+    path('auth/logout/', auth_views.logout_view, name='logout'),
 ]

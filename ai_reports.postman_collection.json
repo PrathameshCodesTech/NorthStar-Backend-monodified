@@ -1,0 +1,171 @@
+{
+  "info": {
+    "name": "AI Reports",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Test AI Services",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/ai/test/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "test", ""]
+        }
+      }
+    },
+    {
+      "name": "2. Generate SQL - Auto",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Show total count of tenants\",\n  \"ai_choice\": \"auto\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/ai/generate-sql/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "generate-sql", ""]
+        }
+      }
+    },
+    {
+      "name": "3. Generate SQL - Ollama",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"List all active users\",\n  \"ai_choice\": \"ollama\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/ai/generate-sql/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "generate-sql", ""]
+        }
+      }
+    },
+    {
+      "name": "4. Generate SQL - Gemini",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Show all templates created this month\",\n  \"ai_choice\": \"gemini\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/ai/generate-sql/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "generate-sql", ""]
+        }
+      }
+    },
+    {
+      "name": "5. Count Users",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"How many users are in the system?\",\n  \"ai_choice\": \"auto\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/ai/generate-sql/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "generate-sql", ""]
+        }
+      }
+    },
+    {
+      "name": "6. List Recent Compliance Records",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Show me the 10 most recent compliance records\",\n  \"ai_choice\": \"auto\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/ai/generate-sql/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "ai", "generate-sql", ""]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "access_token",
+      "value": "YOUR_JWT_TOKEN_HERE"
+    }
+  ]
+}

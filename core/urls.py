@@ -122,6 +122,7 @@ urlpatterns += [
     path('api/v2/', include('user_management.urls')),
     path('api/v1/templates/', include('templates_host.urls')),
     path('api/v1/company/', include('company_compliance.urls')),
+    path('api/ai/', include('ai_reports.urls')),  
     
     # Health checks
     path('health/', health_check, name='health_check'),

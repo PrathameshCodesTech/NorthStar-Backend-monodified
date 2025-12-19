@@ -78,6 +78,7 @@ class Framework(BaseModel):
         blank=True,
         help_text="Governing body (e.g., 'SEC', 'ISO', 'GDPR Authority', 'HIPAA')"
     )
+    
     is_current_version = models.BooleanField(
         default=True,
         help_text="Is this the latest/current version of the framework?"

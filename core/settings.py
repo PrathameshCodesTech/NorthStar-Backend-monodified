@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'user_management',         # From Service 2
     'templates_host',          # From Service 1 (renamed from 'templates')
     'company_compliance',      # From Service 1
+    'ai_reports',
 ]
 
 MIDDLEWARE = [
@@ -172,8 +173,15 @@ SIMPLE_JWT = {
 }
 
 # CORS Configuration (for frontend applications)
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000').split(',')
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:5173',  # Vite dev server
+    'http://localhost:3000',  # React dev server (backup)
+    'http://127.0.0.1:5173',  # Alternative localhost
+]
+
 CORS_ALLOW_CREDENTIALS = True
+
+# Allow all headers (including Authorization)
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -184,8 +192,22 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
-    'x-tenant-slug',  # Custom header for tenant identification
+    'x-tenant-slug',
 ]
+
+# Allow all methods
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+
+
+
+
 
 # Database Encryption Key (for tenant database passwords)
 DB_ENCRYPTION_KEY = config('DB_ENCRYPTION_KEY', default=None)
@@ -305,3 +327,8 @@ if not DEBUG:
 ADMIN_SITE_HEADER = "Compliance Platform Administration"
 ADMIN_SITE_TITLE = "Compliance Platform"
 ADMIN_INDEX_TITLE = "Welcome to Compliance Platform Admin"
+
+
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
+USE_OLLAMA = config('USE_OLLAMA', default=True, cast=bool)
+USE_GEMINI = config('USE_GEMINI', default=True, cast=bool)
