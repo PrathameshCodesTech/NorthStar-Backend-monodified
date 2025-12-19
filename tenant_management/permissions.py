@@ -247,3 +247,29 @@ class HasSSOAccess(BasePermission):
             
         except TenantDatabaseInfo.DoesNotExist:
             return False
+        
+class AllowUnauthenticatedRead(BasePermission):
+    """
+    Allow unauthenticated GET requests (for signup flow)
+    Require authentication for modifications
+    """
+    
+    def has_permission(self, request, view):
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True  # Allow anyone to read plans
+        return request.user and request.user.is_authenticated and request.user.is_superuser
+
+
+class AllowTenantCreation(BasePermission):
+    """
+    Allow unauthenticated POST for tenant creation (signup flow)
+    Require superadmin for all other operations
+    """
+    
+    def has_permission(self, request, view):
+        # Allow unauthenticated POST for tenant creation
+        if request.method == 'POST' and view.action == 'create':
+            return True
+        
+        # Require superadmin for all other operations
+        return request.user and request.user.is_authenticated and request.user.is_superuser

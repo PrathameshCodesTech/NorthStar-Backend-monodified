@@ -191,6 +191,12 @@ class TenantDatabaseInfo(BaseModel):
         help_text="Current subscription plan"
     )
 
+    requested_frameworks = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Frameworks requested during tenant signup [{'id': 'uuid', 'name': 'SOX'}, ...]"
+    )
+
     subscription_status = models.CharField(
         max_length=20,
         choices=[

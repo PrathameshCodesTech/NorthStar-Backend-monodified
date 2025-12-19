@@ -214,10 +214,13 @@ def force_create_company_tables(connection_name, schema_name):
         return {'success': False, 'error': str(e)}
 
 
-def create_tenant_record(tenant_slug, company_name, company_email, subscription_plan_code='BASIC'):
+def create_tenant_record(tenant_slug, company_name, company_email, subscription_plan_code='BASIC', requested_frameworks=None):
     """
     Create tenant record ONLY - no schema creation
     Used for payment-first flow
+    
+    Args:
+        requested_frameworks: List of dicts [{'id': 'uuid', 'name': 'SOX'}, ...]
     
     Returns:
         dict: {
@@ -255,6 +258,7 @@ def create_tenant_record(tenant_slug, company_name, company_email, subscription_
             provisioning_status='PENDING',          # ← Not provisioned yet
             schema_name=schema_name,
             is_active=False,  # ← Not active until payment
+            requested_frameworks=requested_frameworks or [],
         )
         
         # Don't encrypt password since we're not creating schema yet
@@ -495,3 +499,143 @@ def invalidate_tenant_cache(tenant_slug):
     cache_key = f"tenant_db_info:{tenant_slug}"
     cache.delete(cache_key)
     logger.info(f"Invalidated cache: {tenant_slug}")
+
+
+
+def activate_tenant_with_multiple_frameworks(tenant_slug, framework_ids, customization_level='CONTROL_LEVEL'):
+    """
+    Activate tenant with MULTIPLE frameworks
+    Creates schema, runs migrations, subscribes to all frameworks
+    
+    Args:
+        tenant_slug: Tenant identifier
+        framework_ids: List of framework UUIDs
+        customization_level: VIEW_ONLY | CONTROL_LEVEL | FULL
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'tenant_info': TenantDatabaseInfo,
+            'frameworks_subscribed': list,
+            'connection_name': str
+        }
+    """
+    logger.info(f"\n[ACTIVATION] Activating tenant with {len(framework_ids)} frameworks: {tenant_slug}")
+    
+    steps = {
+        'get_tenant': None,
+        'create_schema': None,
+        'django_connection': None,
+        'migrations': None,
+        'framework_subscriptions': [],
+        'final_status': None,
+    }
+    
+    try:
+        # 1) Get tenant record
+        from .models import TenantDatabaseInfo
+        tenant_info = TenantDatabaseInfo.objects.get(
+            tenant_slug=tenant_slug,
+            subscription_status='PENDING_PAYMENT'
+        )
+        steps['get_tenant'] = {'id': str(tenant_info.id)}
+        logger.info(f"[INFO] Found tenant: {tenant_info.company_name}")
+        
+        # 2) Create PostgreSQL schema
+        schema_name = tenant_info.schema_name
+        create_postgresql_schema(schema_name)
+        steps['create_schema'] = {'schema_name': schema_name}
+        logger.info(f"[SUCCESS] Created schema: {schema_name}")
+        
+        # 3) Register Django connection
+        connection_name = add_tenant_database_to_django(tenant_info)
+        steps['django_connection'] = {'connection_name': connection_name}
+        logger.info(f"[SUCCESS] Registered Django connection")
+        
+        # 4) Create tables
+        logger.info(f"[LOADING] Creating tables in {tenant_info.schema_name}")
+        migration_result = force_create_company_tables(
+            connection_name=connection_name,
+            schema_name=tenant_info.schema_name
+        )
+        steps['migrations'] = migration_result
+        
+        if not migration_result['success']:
+            raise Exception(f"Failed to create tables: {migration_result.get('error')}")
+        
+        logger.info(f"[SUCCESS] Tables created")
+        
+        # 4.5) Set tenant to ACTIVE before framework distribution
+        tenant_info.subscription_status = 'ACTIVE'
+        tenant_info.provisioning_status = 'ACTIVE'
+        tenant_info.is_active = True
+        tenant_info.save()
+        logger.info(f"[SUCCESS] Tenant status set to ACTIVE")
+        
+        # 5) Subscribe to ALL frameworks
+        from templates_host.distribution_utils import copy_framework_to_tenant
+        
+        frameworks_subscribed = []
+        
+        for framework_id in framework_ids:
+            logger.info(f"[LOADING] Subscribing to framework: {framework_id}")
+            
+            distribution_result = copy_framework_to_tenant(
+                tenant=tenant_info,
+                framework_id=framework_id,
+                customization_level=customization_level
+            )
+            
+            if not distribution_result['success']:
+                logger.error(f"[ERROR] Framework {framework_id} distribution failed: {distribution_result.get('error')}")
+                # Continue with other frameworks instead of failing completely
+                continue
+            
+            frameworks_subscribed.append({
+                'framework_id': framework_id,
+                'framework_name': distribution_result.get('framework_name'),
+                'customization_level': customization_level
+            })
+            
+            steps['framework_subscriptions'].append(distribution_result)
+            logger.info(f"[SUCCESS] Framework subscribed: {distribution_result.get('framework_name')}")
+        
+        # Check if at least one framework was subscribed
+        if not frameworks_subscribed:
+            raise Exception("Failed to subscribe to any frameworks")
+        
+        # 6) Final updates
+        tenant_info.subscription_start_date = timezone.now().date()
+        tenant_info.provisioned_at = timezone.now()
+        tenant_info.current_framework_count = len(frameworks_subscribed)
+        tenant_info.save()
+        
+        steps['final_status'] = 'ACTIVE'
+        logger.info(f"[SUCCESS] Tenant {tenant_slug} activated with {len(frameworks_subscribed)} frameworks!")
+        
+        # 7) Invalidate cache
+        invalidate_tenant_cache(tenant_slug)
+        
+        return {
+            'success': True,
+            'tenant_info': tenant_info,
+            'connection_name': connection_name,
+            'frameworks_subscribed': frameworks_subscribed,
+            'steps': steps,
+            'message': f'Tenant activated with {len(frameworks_subscribed)} framework(s)'
+        }
+        
+    except TenantDatabaseInfo.DoesNotExist:
+        logger.error(f"[ERROR] Tenant not found or already activated: {tenant_slug}")
+        raise ValueError(f"Tenant '{tenant_slug}' not found or already activated")
+        
+    except Exception as e:
+        logger.error(f"[ERROR] Activation failed: {e}")
+        
+        # Rollback: Update tenant status to failed
+        if 'tenant_info' in locals():
+            tenant_info.provisioning_status = 'FAILED'
+            tenant_info.provisioning_error = str(e)
+            tenant_info.save()
+        
+        raise

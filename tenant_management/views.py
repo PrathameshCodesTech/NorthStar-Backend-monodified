@@ -23,7 +23,7 @@ from .serializers import (
     FrameworkSubscribeSerializer, TenantUsageLogSerializer,
     TenantBillingHistorySerializer, SuperAdminAuditLogSerializer
 )
-from .permissions import IsSuperAdmin, IsSuperAdminOrReadOnly
+from .permissions import IsSuperAdmin, IsSuperAdminOrReadOnly,AllowUnauthenticatedRead,AllowTenantCreation
 from .tenant_utils import (
     create_tenant_record, activate_tenant_with_framework,
     delete_pending_tenant, add_tenant_database_to_django,
@@ -46,7 +46,7 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     """
     
     queryset = SubscriptionPlan.objects.all()
-    permission_classes = [IsSuperAdminOrReadOnly]
+    permission_classes = [AllowUnauthenticatedRead]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['code', 'is_active']
     search_fields = ['name', 'code', 'description']
@@ -82,7 +82,7 @@ class TenantViewSet(viewsets.ModelViewSet):
     """
     
     queryset = TenantDatabaseInfo.objects.all()
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [AllowTenantCreation]
     lookup_field = 'tenant_slug'
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['subscription_status', 'provisioning_status', 'is_active']
@@ -117,10 +117,10 @@ class TenantViewSet(viewsets.ModelViewSet):
         
         POST /api/v2/admin/tenants/
         {
-            "tenant_slug": "acmecorp",
             "company_name": "AcmeCorp Inc",
             "company_email": "admin@acmecorp.com",
             "subscription_plan_code": "PROFESSIONAL"
+            // tenant_slug is optional - auto-generated from company_name
         }
         
         Response:
@@ -135,18 +135,45 @@ class TenantViewSet(viewsets.ModelViewSet):
         }
         """
         from .tenant_utils import create_tenant_record
+        from .validators import validate_and_normalize_slug
+        from .models import TenantDatabaseInfo
         
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
         try:
+            # Get validated data
+            company_name = serializer.validated_data['company_name']
+            company_email = serializer.validated_data['company_email']
+            subscription_plan_code = serializer.validated_data.get('subscription_plan_code', 'BASIC')
+            
+            # Auto-generate tenant_slug if not provided
+            tenant_slug = serializer.validated_data.get('tenant_slug')
+            if not tenant_slug:
+                # Generate unique slug from company name
+                base_slug = validate_and_normalize_slug(company_name)
+                tenant_slug = base_slug
+                counter = 2
+                
+                # Keep incrementing until we find unique slug
+                while TenantDatabaseInfo.objects.filter(tenant_slug=tenant_slug).exists():
+                    tenant_slug = f"{base_slug}-{counter}"
+                    counter += 1
+            
+            # Create tenant record only (no schema yet)
+            # ✅ NEW: Extract requested frameworks
+            requested_frameworks = serializer.validated_data.get('requested_frameworks', [])
+            
             # Create tenant record only (no schema yet)
             result = create_tenant_record(
-                tenant_slug=serializer.validated_data['tenant_slug'],
-                company_name=serializer.validated_data['company_name'],
-                company_email=serializer.validated_data['company_email'],
-                subscription_plan_code=serializer.validated_data.get('subscription_plan_code', 'BASIC')
+                tenant_slug=tenant_slug,
+                company_name=company_name,
+                company_email=company_email,
+                subscription_plan_code=subscription_plan_code,
+                requested_frameworks=requested_frameworks  # ✅ Pass frameworks
             )
+            
+            tenant = result['tenant_info']
             
             tenant = result['tenant_info']
             
@@ -166,7 +193,7 @@ class TenantViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_201_CREATED
             )
-        
+            
         except Exception as e:
             return Response(
                 {

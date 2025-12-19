@@ -26,7 +26,7 @@ from .serializers import (
     AssessmentQuestionSerializer, EvidenceRequirementSerializer,
     LinkFrameworkSerializer, LinkDomainSerializer, LinkCategorySerializer, LinkSubcategorySerializer
 )
-from .permissions import IsSuperAdminUser, IsAdminOrReadOnly
+from .permissions import IsSuperAdminUser, IsAdminOrReadOnly,AllowUnauthenticatedRead
 
 
 # ============================================================================
@@ -43,7 +43,7 @@ class FrameworkCategoryViewSet(viewsets.ModelViewSet):
     
     queryset = FrameworkCategory.objects.filter(is_active=True).order_by('sort_order')
     serializer_class = FrameworkCategorySerializer
-    permission_classes = [IsSuperAdminUser]
+    permission_classes = [AllowUnauthenticatedRead]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'code', 'description']
     ordering_fields = ['name', 'sort_order']
@@ -67,7 +67,7 @@ class FrameworkViewSet(viewsets.ModelViewSet):
     DELETE /api/v1/templates/frameworks/{id}/
     """
     
-    permission_classes = [IsSuperAdminUser]
+    permission_classes = [AllowUnauthenticatedRead]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'category']
     search_fields = ['name', 'full_name', 'description']

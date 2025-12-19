@@ -33,3 +33,15 @@ class IsAdminOrReadOnly(BasePermission):
         
         # Write permissions only for superusers
         return request.user.is_superuser
+    
+
+class AllowUnauthenticatedRead(BasePermission):
+    """
+    Allow unauthenticated GET requests (for signup flow)
+    Require authentication for modifications
+    """
+    
+    def has_permission(self, request, view):
+        if request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return True  # Allow anyone to read frameworks
+        return request.user and request.user.is_authenticated and request.user.is_superuser

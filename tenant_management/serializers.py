@@ -75,11 +75,10 @@ class SubscriptionPlanListSerializer(serializers.ModelSerializer):
 
 class TenantCreateSerializer(serializers.Serializer):
     """Create new tenant - input validation"""
-    
-    tenant_slug = serializers.CharField(
+    tenant_slug = serializers.CharField(  # ← ADD THIS FIELD
         max_length=50,
-        required=True,
-        help_text="Unique identifier (3-50 chars, lowercase, hyphens only)"
+        required=False,  # Optional - will auto-generate if not provided
+        help_text="Unique tenant identifier (auto-generated from company name if not provided)"
     )
     company_name = serializers.CharField(
         max_length=200,
@@ -102,21 +101,14 @@ class TenantCreateSerializer(serializers.Serializer):
         default='BASIC',
         help_text="Plan code: BASIC, PROFESSIONAL, or ENTERPRISE"
     )
-    
-    def validate_tenant_slug(self, value):
-        """Validate and normalize tenant slug"""
-        try:
-            normalized_slug = validate_and_normalize_slug(value)
-        except DjangoValidationError as e:
-            raise serializers.ValidationError(str(e))
-        
-        # Check if slug already exists
-        if TenantDatabaseInfo.objects.filter(tenant_slug=normalized_slug).exists():
-            raise serializers.ValidationError(
-                f"Tenant with slug '{normalized_slug}' already exists"
-            )
-        
-        return normalized_slug
+
+    requested_frameworks = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+        help_text="Frameworks requested: [{'id': 'uuid', 'name': 'SOX'}, ...]"
+    )
+
     
     def validate_subscription_plan_code(self, value):
         """Validate subscription plan exists"""
@@ -142,13 +134,42 @@ class TenantCreateSerializer(serializers.Serializer):
         
         return value.strip()
     
+    def validate_tenant_slug(self, value):
+        """Validate tenant_slug format and uniqueness"""
+        from .validators import validate_and_normalize_slug
+        
+        if value:
+            # Validate format
+            normalized = validate_and_normalize_slug(value)
+            if normalized != value:
+                raise serializers.ValidationError(
+                    f"Invalid slug format. Use lowercase letters, numbers, and hyphens only."
+                )
+            
+            # Check uniqueness
+            if TenantDatabaseInfo.objects.filter(tenant_slug=value).exists():
+                raise serializers.ValidationError("Tenant slug already exists")
+        
+        return value
+    
     def create(self, validated_data):
         """Create and provision tenant"""
         from .tenant_utils import provision_tenant
         
-        tenant_slug = validated_data['tenant_slug']
         company_name = validated_data['company_name']
         subscription_plan_code = validated_data['subscription_plan_code']
+        
+        # Use provided slug or auto-generate
+        tenant_slug = validated_data.get('tenant_slug')
+        if not tenant_slug:
+            # Auto-generate unique slug from company name
+            base_slug = validate_and_normalize_slug(company_name)
+            tenant_slug = base_slug
+            counter = 2
+            
+            while TenantDatabaseInfo.objects.filter(tenant_slug=tenant_slug).exists():
+                tenant_slug = f"{base_slug}-{counter}"
+                counter += 1
         
         # Provision tenant (creates schema/database, runs migrations)
         result = provision_tenant(
@@ -169,7 +190,6 @@ class TenantCreateSerializer(serializers.Serializer):
         tenant_info.save()
         
         return tenant_info
-
 
 class TenantDetailSerializer(serializers.ModelSerializer):
     """Detailed tenant information"""
@@ -197,6 +217,7 @@ class TenantDetailSerializer(serializers.ModelSerializer):
             'current_user_count', 'current_framework_count', 'current_control_count',
             'storage_used_gb', 'usage_summary', 'limits_summary',
             'provisioned_at', 'last_health_check',
+            'requested_frameworks', 
             'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = [
@@ -254,6 +275,7 @@ class TenantListSerializer(serializers.ModelSerializer):
             'id', 'tenant_slug', 'company_name', 'company_email',
             'subscription_plan_name', 'subscription_status', 'provisioning_status',
             'schema_name', 'current_user_count', 'current_framework_count',
+            'requested_frameworks',
             'created_at', 'is_active'
         ]
 
@@ -460,12 +482,14 @@ class TenantBillingHistorySerializer(serializers.ModelSerializer):
 class TenantActivationSerializer(serializers.Serializer):
     """
     Activate tenant after payment confirmation
-    Creates schema, runs migrations, subscribes to framework
+    Creates schema, runs migrations, subscribes to frameworks
     """
     
-    framework_id = serializers.UUIDField(
+    # ✅ CHANGED: Now accepts multiple frameworks
+    framework_ids = serializers.ListField(
+        child=serializers.UUIDField(),
         required=True,
-        help_text="Framework to subscribe to after activation"
+        help_text="List of framework UUIDs to subscribe to"
     )
     customization_level = serializers.ChoiceField(
         choices=['VIEW_ONLY', 'CONTROL_LEVEL', 'FULL'],
@@ -477,14 +501,18 @@ class TenantActivationSerializer(serializers.Serializer):
         help_text="Payment transaction ID for reference"
     )
     
-    def validate_framework_id(self, value):
-        """Validate framework exists"""
+    def validate_framework_ids(self, value):
+        """Validate all frameworks exist"""
         from templates_host.models import Framework
         
-        try:
-            Framework.objects.get(id=value, is_active=True, status='ACTIVE')
-        except Framework.DoesNotExist:
-            raise serializers.ValidationError("Framework not found or inactive")
+        if not value or len(value) == 0:
+            raise serializers.ValidationError("At least one framework is required")
+        
+        for framework_id in value:
+            try:
+                Framework.objects.get(id=framework_id, is_active=True, status='ACTIVE')
+            except Framework.DoesNotExist:
+                raise serializers.ValidationError(f"Framework {framework_id} not found or inactive")
         
         return value
     
@@ -508,11 +536,11 @@ class TenantActivationSerializer(serializers.Serializer):
         return data
     
     def create(self, validated_data):
-        """Activate tenant"""
-        from .tenant_utils import activate_tenant_with_framework
+        """Activate tenant with multiple frameworks"""
+        from .tenant_utils import activate_tenant_with_multiple_frameworks
         
         tenant = self.context['tenant']
-        framework_id = str(validated_data['framework_id'])
+        framework_ids = [str(fid) for fid in validated_data['framework_ids']]
         customization_level = validated_data.get('customization_level', 'CONTROL_LEVEL')
         
         # Enforce customization level based on plan
@@ -523,10 +551,10 @@ class TenantActivationSerializer(serializers.Serializer):
             customization_level = 'CONTROL_LEVEL'
         # ENTERPRISE can use requested level
         
-        # Activate tenant
-        result = activate_tenant_with_framework(
+        # ✅ NEW: Activate tenant with multiple frameworks
+        result = activate_tenant_with_multiple_frameworks(
             tenant_slug=tenant.tenant_slug,
-            framework_id=framework_id,
+            framework_ids=framework_ids,
             customization_level=customization_level
         )
         
